@@ -34,6 +34,7 @@ export interface PlayerState {
   defense: number; // Защита - снижает получаемый урон: damage = max(1, damage - defense) (изначально 0, улучшается +1)
   luck: number; // Удача - влияет на количество собираемых ресурсов: bonus = floor(luck / 5) (изначально 0, улучшается +1)
   regeneration: number; // Регенерация - восстанавливает сытость каждые 10 секунд (изначально 0, улучшается +0.5)
+  buildings?: Record<string, number>; // Построенные постройки: название -> количество
 }
 
 export interface LeaderboardEntry {
@@ -83,4 +84,6 @@ export interface CellData {
   params?: CellParams; // Опционально, для обратной совместимости
   constructionPoints?: number; // Очки строительства
   constructionType?: number; // Тип строительного материала
+  buildingName?: string; // Название постройки
+  buildingId?: string; // ID постройки
 }

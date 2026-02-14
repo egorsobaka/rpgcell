@@ -70,6 +70,10 @@ export class Player {
   // Время создания игрока (для расчета длительности игры)
   @Prop({ type: Date, default: Date.now })
   createdAt: Date;
+
+  // Построенные постройки: название -> количество
+  @Prop({ type: Object, default: {} })
+  buildings: Record<string, number>;
 }
 
 export const PlayerSchema = SchemaFactory.createForClass(Player);

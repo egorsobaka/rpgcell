@@ -292,7 +292,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const playerId = this.getPlayerId(client);
     const player = await this.gameService.collectCell(playerId, body.position);
     if (!player) return;
-    const { color: cellColor, params, constructionPoints, constructionType } = await this.gameService.getCellColorInternalPublic(body.position);
+    const { color: cellColor, params, constructionPoints, constructionType, buildingName, buildingId } = await this.gameService.getCellColorInternalPublic(body.position);
 
     this.server.emit('cell:updated', {
       position: body.position,
@@ -300,6 +300,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       params,
       constructionPoints,
       constructionType,
+      buildingName,
+      buildingId,
     });
 
     await this.broadcastPlayers();
@@ -398,13 +400,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (result.exploded) {
       // Отправляем обновления для всех затронутых клеток
       for (const cell of result.affectedCells) {
-        const { params, constructionPoints, constructionType } = await this.gameService.getCellColorInternalPublic(cell.position);
+        const { params, constructionPoints, constructionType, buildingName, buildingId } = await this.gameService.getCellColorInternalPublic(cell.position);
         this.server.emit('cell:updated', {
           position: cell.position,
           color: cell.color,
           params,
           constructionPoints,
           constructionType,
+          buildingName,
+          buildingId,
         });
       }
     }
@@ -492,6 +496,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           params: cellData.params,
           constructionPoints: result.constructionPoints,
           constructionType: result.constructionType,
+          buildingName: cellData.buildingName,
+          buildingId: cellData.buildingId,
         });
       }
     }
@@ -500,6 +506,47 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       success: result.success,
       message: result.message,
       constructionPoints: result.constructionPoints,
+    });
+  }
+
+  @SubscribeMessage('buildings:list')
+  async handleBuildingsList(@ConnectedSocket() client: Socket): Promise<void> {
+    const buildings = await this.gameService.getAllBuildings();
+    client.emit('buildings:list', buildings);
+  }
+
+  @SubscribeMessage('building:build')
+  async handleBuildBuilding(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { buildingName: string },
+  ): Promise<void> {
+    const playerId = this.getPlayerId(client);
+    const result = await this.gameService.buildBuilding(playerId, body.buildingName);
+    
+    if (result.success) {
+      // Обновляем информацию об игроке
+      await this.broadcastPlayers();
+      
+      // Отправляем обновления для всех затронутых клеток
+      if (result.affectedCells) {
+        for (const cellPosition of result.affectedCells) {
+          const cellData = await this.gameService.getCellColorInternalPublic(cellPosition);
+          this.server.emit('cell:updated', {
+            position: cellPosition,
+            color: cellData.color,
+            params: cellData.params,
+            constructionPoints: cellData.constructionPoints,
+            constructionType: cellData.constructionType,
+            buildingName: cellData.buildingName,
+            buildingId: cellData.buildingId,
+          });
+        }
+      }
+    }
+    
+    client.emit('building:built', {
+      success: result.success,
+      message: result.message,
     });
   }
 

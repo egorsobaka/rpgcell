@@ -39,6 +39,12 @@ export class Cell {
 
   @Prop({ type: Number, required: false })
   constructionType?: number; // Тип строительного материала (еда / 32)
+
+  @Prop({ type: String, required: false })
+  buildingName?: string; // Название постройки, если клетка является частью постройки
+
+  @Prop({ type: String, required: false })
+  buildingId?: string; // ID постройки (для группировки клеток одной постройки)
 }
 
 export const CellSchema = SchemaFactory.createForClass(Cell);

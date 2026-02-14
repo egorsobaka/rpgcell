@@ -8,6 +8,7 @@ import { Player, PlayerSchema } from './schemas/player.schema';
 import { Cell, CellSchema } from './schemas/cell.schema';
 import { Chat, ChatSchema } from './schemas/chat.schema';
 import { LocalChat, LocalChatSchema } from './schemas/local-chat.schema';
+import { Building, BuildingSchema } from './schemas/building.schema';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { LocalChat, LocalChatSchema } from './schemas/local-chat.schema';
       { name: Cell.name, schema: CellSchema },
       { name: Chat.name, schema: ChatSchema },
       { name: LocalChat.name, schema: LocalChatSchema },
+      { name: Building.name, schema: BuildingSchema },
     ]),
   ],
   controllers: [AppController],

@@ -30,6 +30,7 @@ interface PlayerState {
   defense?: number;
   luck?: number;
   regeneration?: number;
+  buildings?: Record<string, number>;
 }
 
 interface ChatMessage {
@@ -445,7 +446,8 @@ function App() {
     Map<string, { progress: number; required: number }>
   >(() => new Map());
   const [cellHealth, setCellHealth] = useState<Map<string, number>>(() => new Map());
-  const [sidebarTab, setSidebarTab] = useState<'map' | 'inventory' | 'leaderboard' | 'chat' | 'cell-info' | 'stats' | 'help' | 'local-chat'>('map');
+  const [sidebarTab, setSidebarTab] = useState<'map' | 'inventory' | 'leaderboard' | 'chat' | 'cell-info' | 'stats' | 'help' | 'local-chat' | 'buildings'>('map');
+  const [buildings, setBuildings] = useState<Array<{ name: string; structure: any[]; cellPower: number; cellHealth: number }>>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [localChat, setLocalChat] = useState<LocalChatData | null>(null);
   const [localChatInput, setLocalChatInput] = useState('');
@@ -460,6 +462,7 @@ function App() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editingName, setEditingName] = useState('');
   const [helpTooltip, setHelpTooltip] = useState<{ param: string; x: number; y: number } | null>(null);
+  const [modalMessage, setModalMessage] = useState<{ title: string; message: string } | null>(null);
 
   useEffect(() => {
     // Проверяем сохраненный ID игрока
@@ -522,7 +525,7 @@ function App() {
       (payload: {
         center: CellPosition;
         radius: number;
-        cells: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number }[];
+        cells: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }[];
       }) => {
         setCellColors((prev) => {
           const next = new Map(prev);
@@ -598,11 +601,24 @@ function App() {
 
     s.on('inventory:dropped', (data: { success: boolean; message?: string; constructionPoints?: number }) => {
       if (!data.success && data.message) {
-        alert(data.message);
+        setModalMessage({ title: 'Ошибка', message: data.message });
       }
     });
 
-    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number }) => {
+    s.on('buildings:list', (data: Array<{ name: string; structure: any[]; cellPower: number; cellHealth: number }>) => {
+      setBuildings(data);
+    });
+
+    s.on('building:built', (data: { success: boolean; message?: string }) => {
+      if (!data.success && data.message) {
+        setModalMessage({ title: 'Ошибка строительства', message: data.message });
+      }
+    });
+
+    // Запрашиваем список построек при подключении
+    s.emit('buildings:list');
+
+    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }) => {
       const key = `${data.position.x}:${data.position.y}`;
       
       // Обновляем цвет клетки
@@ -802,7 +818,7 @@ function App() {
         setIsEditingName(false);
         setEditingName('');
       } else {
-        alert(result.message || 'Ошибка при изменении имени');
+        setModalMessage({ title: 'Ошибка', message: result.message || 'Ошибка при изменении имени' });
       }
     });
 
@@ -1080,7 +1096,7 @@ function App() {
                               const isGray = rgb.r === rgb.g && rgb.g === rgb.b && cellColorAtPlayer !== '#ffffff';
                               
                               if (!isWhite && !isGray) {
-                                alert('Встаньте на белую клетку или клетку со строительным материалом для сброса инвентаря');
+                                setModalMessage({ title: 'Внимание', message: 'Встаньте на белую клетку или клетку со строительным материалом для сброса инвентаря' });
                                 return;
                               }
                               
@@ -1093,7 +1109,7 @@ function App() {
                                 const itemType = Math.ceil(itemExperience / 10);
                                 
                                 if (cellType !== undefined && itemType !== cellType) {
-                                  alert(`Можно сбрасывать только в клетку типа ${cellType}. Тип предмета: ${itemType}`);
+                                  setModalMessage({ title: 'Ошибка типа', message: `Можно сбрасывать только в клетку типа ${cellType}. Тип предмета: ${itemType}` });
                                   return;
                                 }
                               }
@@ -1963,6 +1979,67 @@ if (experience >= requiredExperience):
             </div>
           </section>
         );
+      case 'buildings':
+        return (
+          <section className="sidebar-section">
+            <h2>Постройки</h2>
+            {buildings.length === 0 ? (
+              <div>Загрузка построек...</div>
+            ) : (
+              <div>
+                {buildings.map((building) => {
+                  const builtCount = me?.buildings?.[building.name] ?? 0;
+                  const isBuilt = builtCount > 0;
+                  return (
+                    <div
+                      key={building.name}
+                      style={{
+                        marginBottom: '12px',
+                        padding: '12px',
+                        backgroundColor: isBuilt ? '#1e3a5f' : '#1e293b',
+                        borderRadius: '4px',
+                        border: isBuilt ? '2px solid #3b82f6' : '1px solid rgba(148, 163, 184, 0.3)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <h3 style={{ margin: 0, fontSize: '16px', color: '#fff' }}>{building.name}</h3>
+                        {isBuilt && (
+                          <span style={{ fontSize: '12px', color: '#3b82f6', fontWeight: 'bold' }}>
+                            Построено: {builtCount}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                        <div>Сила клетки: {building.cellPower}</div>
+                        <div>Жизни клетки: {building.cellHealth}</div>
+                        <div>Клеток в структуре: {building.structure.length}</div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (!socket) return;
+                          socket.emit('building:build', { buildingName: building.name });
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          backgroundColor: isBuilt ? '#3b82f6' : '#22c55e',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          fontWeight: 'bold',
+                        }}
+                      >
+                        {isBuilt ? 'Построить еще' : 'Построить'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        );
       case 'map':
       default:
         return (
@@ -2159,6 +2236,13 @@ if (experience >= requiredExperience):
               ⚙️ Параметры
             </button>
             <button
+              className={`tab-button ${sidebarTab === 'buildings' ? 'active' : ''}`}
+              onClick={() => setSidebarTab('buildings')}
+              title="Постройки"
+            >
+              🏗️ Постройки
+            </button>
+            <button
               className={`tab-button ${sidebarTab === 'help' ? 'active' : ''}`}
               onClick={() => setSidebarTab('help')}
               title="Помощь и правила"
@@ -2314,6 +2398,17 @@ if (experience >= requiredExperience):
           <span className="bar-button-text">Параметры</span>
         </button>
         <button
+          className={`bar-button ${sidebarTab === 'buildings' ? 'active' : ''}`}
+          onClick={() => {
+            setSidebarTab('buildings');
+            setSidebarOpen(true);
+          }}
+          title="Постройки"
+        >
+          <span className="bar-button-icon">🏗️</span>
+          <span className="bar-button-text">Постройки</span>
+        </button>
+        <button
           className={`bar-button ${sidebarTab === 'help' ? 'active' : ''}`}
           onClick={() => {
             setSidebarTab('help');
@@ -2446,6 +2541,221 @@ if (experience >= requiredExperience):
           </div>
         );
       })()}
+
+      {/* Модальное окно для сообщений */}
+      {modalMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+          }}
+          onClick={() => setModalMessage(null)}
+        >
+          <div
+            style={{
+              backgroundColor: '#1e293b',
+              border: '2px solid #3b82f6',
+              borderRadius: '12px',
+              padding: '24px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px',
+                borderBottom: '1px solid rgba(59, 130, 246, 0.3)',
+                paddingBottom: '12px',
+              }}
+            >
+              <h2
+                style={{
+                  margin: 0,
+                  fontSize: '20px',
+                  color: '#3b82f6',
+                  fontWeight: 'bold',
+                  textShadow: '0 0 10px rgba(59, 130, 246, 0.5)',
+                }}
+              >
+                {modalMessage?.title}
+              </h2>
+              <button
+                onClick={() => setModalMessage(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#94a3b8',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  padding: '0',
+                  width: '32px',
+                  height: '32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '4px',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#334155';
+                  e.currentTarget.style.color = '#fff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.color = '#94a3b8';
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div
+              style={{
+                fontSize: '16px',
+                color: '#e2e8f0',
+                lineHeight: '1.6',
+                marginBottom: '20px',
+              }}
+            >
+              {modalMessage?.message}
+            </div>
+            <button
+              onClick={() => setModalMessage(null)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                backgroundColor: '#3b82f6',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                boxShadow: '0 4px 12px rgba(59, 130, 246, 0.4)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#2563eb';
+                e.currentTarget.style.boxShadow = '0 6px 16px rgba(59, 130, 246, 0.6)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = '#3b82f6';
+                e.currentTarget.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.4)';
+              }}
+            >
+              Понятно
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Модальное окно для помощи */}
+      {helpTooltip && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+          }}
+          onClick={() => setHelpTooltip(null)}
+        >
+          <div
+            style={{
+              backgroundColor: '#1e293b',
+              border: '2px solid #3b82f6',
+              borderRadius: '12px',
+              padding: '24px',
+              maxWidth: '600px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflowY: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px',
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: '20px', color: '#3b82f6' }}>
+                {helpTooltip && getParamHelp(helpTooltip.param)?.name || helpTooltip?.param}
+              </h2>
+              <button
+                onClick={() => setHelpTooltip(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#94a3b8',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                }}
+              >
+                ×
+              </button>
+            </div>
+            {helpTooltip && (() => {
+              const help = getParamHelp(helpTooltip.param);
+              if (!help) return <div>Информация не найдена</div>;
+              return (
+                <div>
+                  {help.description && (
+                    <div style={{ marginBottom: '12px', fontSize: '16px', color: '#e2e8f0' }}>
+                      {help.description}
+                    </div>
+                  )}
+                  {help.source && (
+                    <div style={{ marginBottom: '12px', fontSize: '14px', color: '#94a3b8' }}>
+                      <strong>Источник:</strong> {help.source}
+                    </div>
+                  )}
+                  {help.calculation && (
+                    <div style={{ marginBottom: '12px', fontSize: '14px', color: '#94a3b8' }}>
+                      <strong>Расчет:</strong> {help.calculation}
+                    </div>
+                  )}
+                  {help.effects && (
+                    <div style={{ marginBottom: '12px', fontSize: '14px', color: '#94a3b8' }}>
+                      <strong>Влияние:</strong> {help.effects}
+                    </div>
+                  )}
+                  {help.initialValue && (
+                    <div style={{ marginBottom: '12px', fontSize: '14px', color: '#94a3b8' }}>
+                      <strong>Начальное значение:</strong> {help.initialValue}
+                    </div>
+                  )}
+                  {help.upgrade && (
+                    <div style={{ fontSize: '14px', color: '#94a3b8' }}>
+                      <strong>Улучшение:</strong> {help.upgrade}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

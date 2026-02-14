@@ -15,6 +15,7 @@ import { Player, PlayerDocument } from './schemas/player.schema';
 import { Cell, CellDocument } from './schemas/cell.schema';
 import { Chat, ChatDocument } from './schemas/chat.schema';
 import { LocalChat as LocalChatModel, LocalChatDocument } from './schemas/local-chat.schema';
+import { Building, BuildingDocument } from './schemas/building.schema';
 
 // Генерация палитры из 100 HEX-цветов с использованием золотого угла
 function hslToHex(h: number, s: number, l: number): CellColor {
@@ -301,7 +302,47 @@ export class GameService {
     @InjectModel(Cell.name) private cellModel: Model<CellDocument>,
     @InjectModel(Chat.name) private chatModel: Model<ChatDocument>,
     @InjectModel(LocalChatModel.name) private localChatModel: Model<LocalChatDocument>,
-  ) {}
+    @InjectModel(Building.name) private buildingModel: Model<BuildingDocument>,
+  ) {
+    // Инициализируем постройки при старте
+    this.initializeBuildings();
+  }
+
+  // Инициализация построек в базе данных
+  private async initializeBuildings(): Promise<void> {
+    try {
+      // Стена
+      await this.buildingModel.findOneAndUpdate(
+        { name: 'Стена' },
+        {
+          name: 'Стена',
+          structure: [{ x: 0, y: 0, a: 400, t: [2, 3, 4, 5] }],
+          cellPower: 16,
+          cellHealth: 1000,
+        },
+        { upsert: true },
+      ).exec();
+
+      // Дом
+      await this.buildingModel.findOneAndUpdate(
+        { name: 'Дом' },
+        {
+          name: 'Дом',
+          structure: [
+            { x: 0, y: 0, a: 400, t: [2, 3, 4, 5] },
+            { x: 1, y: 0, a: 400, t: [2, 3, 4, 5] },
+            { x: 0, y: 1, a: 400, t: [2, 3, 4, 5] },
+            { x: 1, y: 1, a: 400, t: [2, 3, 4, 5] },
+          ],
+          cellPower: 16,
+          cellHealth: 1000,
+        },
+        { upsert: true },
+      ).exec();
+    } catch (error) {
+      console.error('Ошибка при инициализации построек:', error);
+    }
+  }
 
   async getPlayerById(playerId: string): Promise<PlayerState | null> {
     // Проверяем кеш
@@ -423,6 +464,7 @@ export class GameService {
       defense: player.defense ?? 0,
       luck: player.luck ?? 0,
       regeneration: player.regeneration ?? 0,
+      buildings: player.buildings || {},
     };
   }
 
@@ -906,7 +948,7 @@ export class GameService {
   }
 
   // Внутренний метод для получения цвета и параметров клетки
-  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number }> {
+  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }> {
     const key = `${pos.x}:${pos.y}`;
     const cell = await this.cellModel.findOne({ key }).exec();
     
@@ -940,12 +982,15 @@ export class GameService {
         experience: cell.experience,
         power: cell.power,
       };
-      const color = paramsToColor(params, constructionPoints, constructionType);
+      // Если клетка является частью постройки, используем цвет постройки (красный)
+      const color = cell.buildingName ? '#ff0000' : paramsToColor(params, constructionPoints, constructionType);
       return {
         color,
         params,
         constructionPoints,
         constructionType,
+        buildingName: cell.buildingName,
+        buildingId: cell.buildingId,
       };
     }
 
@@ -989,7 +1034,7 @@ export class GameService {
       { upsert: true },
     ).exec();
 
-    return { color, params, constructionPoints, constructionType: undefined };
+    return { color, params, constructionPoints, constructionType: undefined, buildingName: undefined, buildingId: undefined };
   }
 
   // Получить только цвет (для обратной совместимости)
@@ -1004,7 +1049,7 @@ export class GameService {
   }
 
   // Публичный метод для получения параметров клетки (для gateway)
-  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number }> {
+  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }> {
     return await this.getCellColorInternal(pos);
   }
 
@@ -1033,18 +1078,22 @@ export class GameService {
     params?: CellParams;
     constructionPoints?: number;
     constructionType?: number;
+    buildingName?: string;
+    buildingId?: string;
   }[]> {
-    const result: { position: CellPosition; color: CellColor; params?: CellParams; constructionPoints?: number; constructionType?: number }[] = [];
+    const result: { position: CellPosition; color: CellColor; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }[] = [];
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const pos = { x: center.x + dx, y: center.y + dy };
-        const { color, params, constructionPoints, constructionType } = await this.getCellColorInternal(pos);
+        const { color, params, constructionPoints, constructionType, buildingName, buildingId } = await this.getCellColorInternal(pos);
         result.push({
           position: pos,
           color,
           params,
           constructionPoints,
           constructionType,
+          buildingName,
+          buildingId,
         });
       }
     }
@@ -1699,6 +1748,102 @@ export class GameService {
       constructionPoints: newConstructionPoints,
       constructionType: newConstructionType,
     };
+  }
+
+  // Получить все доступные постройки
+  async getAllBuildings(): Promise<Array<{ name: string; structure: any[]; cellPower: number; cellHealth: number }>> {
+    const buildings = await this.buildingModel.find().lean().exec();
+    return buildings.map(b => ({
+      name: b.name,
+      structure: b.structure,
+      cellPower: b.cellPower,
+      cellHealth: b.cellHealth,
+    }));
+  }
+
+  // Построить постройку
+  async buildBuilding(
+    clientId: string,
+    buildingName: string,
+  ): Promise<{ success: boolean; message?: string; affectedCells?: CellPosition[] }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { success: false, message: 'Игрок не найден' };
+    }
+
+    // Получаем информацию о постройке
+    const building = await this.buildingModel.findOne({ name: buildingName }).lean().exec();
+    if (!building) {
+      return { success: false, message: 'Постройка не найдена' };
+    }
+
+    const startPosition = player.position;
+    const buildingId = randomUUID(); // Уникальный ID для этой постройки
+    const affectedCells: CellPosition[] = [];
+
+    // Проверяем каждую клетку структуры
+    for (const struct of building.structure) {
+      const cellPosition: CellPosition = {
+        x: startPosition.x + struct.x,
+        y: startPosition.y + struct.y,
+      };
+      const key = `${cellPosition.x}:${cellPosition.y}`;
+
+      // Получаем клетку
+      const cell = await this.cellModel.findOne({ key }).exec();
+      if (!cell) {
+        return { success: false, message: `Клетка ${key} не найдена` };
+      }
+
+      // Проверяем, что клетка является строительным материалом
+      if (!cell.constructionPoints || cell.constructionPoints === 0) {
+        return { success: false, message: `Клетка ${key} не является строительным материалом` };
+      }
+
+      // Проверяем тип строительного материала
+      if (cell.constructionType === undefined || !struct.t.includes(cell.constructionType)) {
+        return { success: false, message: `Клетка ${key} имеет неподходящий тип (${cell.constructionType}, требуется один из: ${struct.t.join(', ')})` };
+      }
+
+      // Проверяем минимальное количество строительных очков
+      if (cell.constructionPoints < struct.a) {
+        return { success: false, message: `Клетка ${key} имеет недостаточно строительных очков (${cell.constructionPoints}, требуется минимум ${struct.a})` };
+      }
+
+      // Проверяем, что клетка еще не является частью другой постройки
+      if (cell.buildingName && cell.buildingName !== buildingName) {
+        return { success: false, message: `Клетка ${key} уже является частью постройки "${cell.buildingName}"` };
+      }
+
+      affectedCells.push(cellPosition);
+    }
+
+    // Если все проверки пройдены, обновляем клетки
+    for (const cellPosition of affectedCells) {
+      const key = `${cellPosition.x}:${cellPosition.y}`;
+      await this.cellModel.findOneAndUpdate(
+        { key },
+        {
+          $set: {
+            color: '#ff0000', // Красный цвет для построек
+            power: building.cellPower,
+            health: building.cellHealth,
+            buildingName: building.name,
+            buildingId: buildingId,
+          },
+        },
+      ).exec();
+    }
+
+    // Обновляем счетчик построек у игрока
+    const currentCount = player.buildings?.[buildingName] ?? 0;
+    if (!player.buildings) {
+      player.buildings = {};
+    }
+    player.buildings[buildingName] = currentCount + 1;
+    await this.savePlayer(player);
+
+    return { success: true, affectedCells };
   }
 }
 
