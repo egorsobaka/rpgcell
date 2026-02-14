@@ -1,0 +1,1224 @@
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { randomUUID } from 'crypto';
+import {
+  CellColor,
+  CellPosition,
+  ChatMessage,
+  LeaderboardEntry,
+  LocalChat,
+  LocalChatMessage,
+  PlayerState,
+} from './game.types';
+import { Player, PlayerDocument } from './schemas/player.schema';
+import { Cell, CellDocument } from './schemas/cell.schema';
+import { Chat, ChatDocument } from './schemas/chat.schema';
+import { LocalChat as LocalChatModel, LocalChatDocument } from './schemas/local-chat.schema';
+
+// Генерация палитры из 100 HEX-цветов с использованием золотого угла
+function hslToHex(h: number, s: number, l: number): CellColor {
+  s /= 100;
+  l /= 100;
+
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (h >= 0 && h < 60) {
+    r = c;
+    g = x;
+    b = 0;
+  } else if (h >= 60 && h < 120) {
+    r = x;
+    g = c;
+    b = 0;
+  } else if (h >= 120 && h < 180) {
+    r = 0;
+    g = c;
+    b = x;
+  } else if (h >= 180 && h < 240) {
+    r = 0;
+    g = x;
+    b = c;
+  } else if (h >= 240 && h < 300) {
+    r = c;
+    g = 0;
+    b = x;
+  } else {
+    r = c;
+    g = 0;
+    b = x;
+  }
+
+  const toHex = (v: number) => {
+    const hv = Math.round((v + m) * 255)
+      .toString(16)
+      .padStart(2, '0');
+    return hv;
+  };
+
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function generateColorPalette(count: number): CellColor[] {
+  const colors: CellColor[] = [];
+  for (let i = 0; i < count; i++) {
+    const hue = (i * 137.508) % 360; // золотой угол
+    const saturation = 60 + ((i * 7) % 40); // 60-100%
+    const lightness = 40 + ((i * 11) % 30); // 40-70%
+    colors.push(
+      hslToHex(Math.floor(hue), Math.floor(saturation), Math.floor(lightness)),
+    );
+  }
+  return colors;
+}
+
+// Базовый набор цветов, которые игрок может открывать по очереди (широкий спектр RGB)
+// Увеличиваем количество до 256, чтобы плотнее покрыть весь диапазон #000000-#ffffff
+const BASE_COLORS: CellColor[] = generateColorPalette(256);
+
+// Фрактальный генератор цвета клетки с использованием золотого сечения
+const PHI = (1 + Math.sqrt(5)) / 2;
+const GOLDEN_CONJUGATE = PHI - 1; // ~0.618
+
+function fract(x: number): number {
+  return x - Math.floor(x);
+}
+
+// Вычисление силы клетки по красному компоненту
+function getCellPowerFromColor(color: CellColor): number {
+  const hex = color.replace('#', '');
+  if (hex.length === 6) {
+    const r = parseInt(hex.substring(0, 2), 16);
+    return Math.max(1, r + 1); // Сила от 1 до 256
+  }
+  return 1;
+}
+
+// Вычисление весов для цветов (обратно пропорционально силе)
+function calculateColorWeights(): number[] {
+  const weights: number[] = [];
+  for (const color of BASE_COLORS) {
+    const power = getCellPowerFromColor(color);
+    // Вес обратно пропорционален силе в степени 1.5
+    // Это означает, что сильные клетки появляются реже
+    const weight = 1 / Math.pow(power, 1.5);
+    weights.push(weight);
+  }
+  return weights;
+}
+
+// Предвычисленные веса для всех цветов
+const COLOR_WEIGHTS = calculateColorWeights();
+const TOTAL_WEIGHT = COLOR_WEIGHTS.reduce((sum, w) => sum + w, 0);
+
+// Взвешенная выборка цвета на основе весов
+function weightedRandomColor(seed: number): CellColor {
+  // Используем seed для генерации псевдослучайного числа в диапазоне [0, TOTAL_WEIGHT)
+  // Преобразуем seed в значение от 0 до 1, используя хеш-функцию
+  const hash = Math.abs(seed);
+  const normalized = (hash % 1000000) / 1000000;
+  const randomValue = normalized * TOTAL_WEIGHT;
+  
+  let cumulativeWeight = 0;
+  for (let i = 0; i < BASE_COLORS.length; i++) {
+    cumulativeWeight += COLOR_WEIGHTS[i];
+    if (randomValue <= cumulativeWeight) {
+      return BASE_COLORS[i];
+    }
+  }
+  // Fallback на последний цвет (на случай ошибок округления)
+  return BASE_COLORS[BASE_COLORS.length - 1];
+}
+
+// Генератор диагональных линий с ограничением длины и случайной шириной
+// Теперь учитывает силу клетки - чем сильнее клетка, тем реже она появляется
+function pseudoRandomColor(x: number, y: number): CellColor {
+  // Диагональ вида x + y = const (идет сверху-слева вниз-вправо)
+  const diagonalSum = x + y;
+  
+  // Разбиваем диагональ на сегменты длиной максимум 10 клеток
+  const segmentIndex = Math.floor(diagonalSum / 10);
+  
+  // Генерируем ширину линии для этого сегмента (от 3)
+  const widthSeed = (segmentIndex * 73856093) ^ (segmentIndex * 19349663);
+  const lineWidth = 3 + (Math.abs(widthSeed) % 4); // 3-6 клеток шириной
+  
+  // Определяем перпендикулярную координату для создания полос шириной lineWidth
+  // Используем x - y для создания перпендикулярных полос
+  const perpendicular = x - y;
+  const stripIndex = Math.floor(perpendicular / lineWidth);
+  
+  // Генерируем seed для взвешенной выборки цвета
+  // Цвет меняется и по сегментам, и по полосам
+  const colorSeed = (segmentIndex * 73856093) ^ (stripIndex * 19349663);
+  
+  // Используем взвешенную выборку, чтобы сильные клетки появлялись реже
+  return weightedRandomColor(colorSeed);
+}
+
+
+@Injectable()
+export class GameService {
+  // Источники случайных цветов на карте
+  private colorSources: { position: CellPosition; color: CellColor }[] = [
+    { position: { x: -10, y: 0 }, color: BASE_COLORS[5] },
+    { position: { x: 10, y: 0 }, color: BASE_COLORS[25] },
+    { position: { x: 0, y: -10 }, color: BASE_COLORS[55] },
+    { position: { x: 0, y: 10 }, color: BASE_COLORS[105] },
+  ];
+
+  // Кеш игроков в памяти для быстрого доступа (обновляется при изменениях)
+  private playersCache = new Map<string, PlayerState>();
+
+  constructor(
+    @InjectModel(Player.name) private playerModel: Model<PlayerDocument>,
+    @InjectModel(Cell.name) private cellModel: Model<CellDocument>,
+    @InjectModel(Chat.name) private chatModel: Model<ChatDocument>,
+    @InjectModel(LocalChatModel.name) private localChatModel: Model<LocalChatDocument>,
+  ) {}
+
+  async getPlayerById(playerId: string): Promise<PlayerState | null> {
+    // Проверяем кеш
+    const cached = this.playersCache.get(playerId);
+    if (cached) return cached;
+
+    // Загружаем из MongoDB
+    const player = await this.playerModel.findOne({ id: playerId }).lean().exec();
+    if (!player) return null;
+    
+    const playerState = this.playerToState(player);
+    this.playersCache.set(playerId, playerState);
+    return playerState;
+  }
+
+  async getOrCreatePlayer(clientId: string): Promise<PlayerState> {
+    // Проверяем кеш
+    const cached = this.playersCache.get(clientId);
+    if (cached) return cached;
+
+    // Загружаем из MongoDB
+    let player = await this.playerModel.findOne({ id: clientId }).lean().exec();
+    
+    // Миграция: если у существующего игрока нет новых полей, инициализируем их
+    if (player && (player.health === undefined || player.maxHealth === undefined || player.defense === undefined || player.luck === undefined || player.regeneration === undefined)) {
+      await this.playerModel.findOneAndUpdate(
+        { id: clientId },
+        {
+          $set: {
+            health: player.health ?? 100,
+            maxHealth: player.maxHealth ?? 100,
+            defense: player.defense ?? 0,
+            luck: player.luck ?? 0,
+            regeneration: player.regeneration ?? 0,
+          },
+        },
+      );
+      // Перезагружаем игрока после миграции
+      player = await this.playerModel.findOne({ id: clientId }).lean().exec();
+    }
+    
+    if (!player) {
+      // Создаем нового игрока
+      const newPlayer = new this.playerModel({
+        id: clientId,
+        name: `Player-${clientId.slice(0, 4)}`,
+        position: { x: 0, y: 0 },
+        unlockedColors: [],
+        inventory: {},
+        totalCollected: 0,
+        colorLevels: {},
+        satiety: 255,
+        weight: 255,
+        stamina: 1,
+        collectionPower: 10,
+        experience: 0,
+        power: 1,
+        level: 1,
+        availableUpgrades: 0,
+        health: 100,
+        maxHealth: 100,
+        defense: 0,
+        luck: 0,
+        regeneration: 0,
+      });
+      await newPlayer.save();
+      player = newPlayer.toObject();
+      
+      // Добавляем игрока в чат его начальной позиции
+      const key = `${player.position.x}:${player.position.y}`;
+      await this.localChatModel.findOneAndUpdate(
+        { key },
+        {
+          $setOnInsert: {
+            key,
+            cellPosition: player.position,
+            participants: [],
+            messages: [],
+          },
+        },
+        { upsert: true, new: true },
+      );
+      await this.localChatModel.updateOne(
+        { key },
+        { $addToSet: { participants: clientId } },
+      );
+    }
+    
+    const playerState = this.playerToState(player);
+    this.playersCache.set(clientId, playerState);
+    return playerState;
+  }
+
+  private playerToState(player: any): PlayerState {
+    return {
+      id: player.id,
+      name: player.name,
+      position: player.position,
+      unlockedColors: player.unlockedColors || [],
+      inventory: player.inventory || {},
+      totalCollected: player.totalCollected || 0,
+      colorLevels: player.colorLevels || {},
+      satiety: player.satiety ?? 255,
+      weight: player.weight ?? 255,
+      stamina: player.stamina ?? 1,
+      collectionPower: player.collectionPower ?? 10,
+      experience: player.experience ?? 0,
+      power: player.power ?? 1,
+      level: player.level ?? 1,
+      availableUpgrades: player.availableUpgrades ?? 0,
+      health: player.health ?? 100,
+      maxHealth: player.maxHealth ?? 100,
+      defense: player.defense ?? 0,
+      luck: player.luck ?? 0,
+      regeneration: player.regeneration ?? 0,
+    };
+  }
+
+  private async savePlayer(playerState: PlayerState): Promise<void> {
+    await this.playerModel.findOneAndUpdate(
+      { id: playerState.id },
+      {
+        $set: {
+          name: playerState.name,
+          position: playerState.position,
+          unlockedColors: playerState.unlockedColors,
+          inventory: playerState.inventory,
+          totalCollected: playerState.totalCollected,
+          colorLevels: playerState.colorLevels,
+        satiety: playerState.satiety,
+        weight: playerState.weight,
+        stamina: playerState.stamina,
+        collectionPower: playerState.collectionPower,
+        experience: playerState.experience,
+        power: playerState.power,
+        level: playerState.level,
+        availableUpgrades: playerState.availableUpgrades,
+        health: playerState.health,
+        maxHealth: playerState.maxHealth,
+        defense: playerState.defense,
+        luck: playerState.luck,
+        regeneration: playerState.regeneration,
+        },
+      },
+      { upsert: true },
+    );
+    // Обновляем кеш
+    this.playersCache.set(playerState.id, playerState);
+  }
+
+
+  async removePlayer(clientId: string): Promise<void> {
+    await this.playerModel.deleteOne({ id: clientId });
+    this.playersCache.delete(clientId);
+  }
+
+  // Удалить всех игроков (для тестирования/сброса)
+  async removeAllPlayers(): Promise<{ deletedCount: number }> {
+    const result = await this.playerModel.deleteMany({}).exec();
+    this.playersCache.clear();
+    return { deletedCount: result.deletedCount || 0 };
+  }
+
+  // Перегенерировать карту (удалить все клетки)
+  async regenerateMap(): Promise<{ deletedCount: number }> {
+    const result = await this.cellModel.deleteMany({}).exec();
+    return { deletedCount: result.deletedCount || 0 };
+  }
+
+  // Извлечение компонентов RGB из HEX цвета
+  private getRGBComponents(hexColor: string): { r: number; g: number; b: number } {
+    // Убираем # если есть
+    const hex = hexColor.replace('#', '');
+    if (hex.length === 6) {
+      // #RRGGBB
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      return { r, g, b };
+    } else if (hex.length === 3) {
+      // #RGB -> #RRGGBB
+      const r = parseInt(hex.substring(0, 1) + hex.substring(0, 1), 16);
+      const g = parseInt(hex.substring(1, 2) + hex.substring(1, 2), 16);
+      const b = parseInt(hex.substring(2, 3) + hex.substring(2, 3), 16);
+      return { r, g, b };
+    }
+    return { r: 0, g: 0, b: 0 };
+  }
+
+  // Извлечение зеленого компонента из HEX цвета для восстановления сытости
+  private getGreenComponent(hexColor: string): number {
+    return this.getRGBComponents(hexColor).g;
+  }
+
+  // Вычисление веса одного элемента инвентаря
+  // Вес = (количество * зеленый компонент / 16) + (количество * синий компонент / 32)
+  private getItemWeight(color: string, count: number): number {
+    const { g, b } = this.getRGBComponents(color);
+    return (count * g / 16) + (count * b / 32);
+  }
+
+  // Вычисление общего веса инвентаря
+  private getInventoryWeight(inventory: Record<string, number>): number {
+    let totalWeight = 0;
+    for (const [color, count] of Object.entries(inventory)) {
+      if (count > 0) {
+        totalWeight += this.getItemWeight(color, count);
+      }
+    }
+    return Math.round(totalWeight);
+  }
+
+  // Вычисление максимального веса инвентаря
+  // Максимальный вес = (вес игрока / 2) + (вес игрока / 2 * выносливость / 10)
+  private getMaxInventoryWeight(playerWeight: number, playerStamina: number): number {
+    return Math.round((playerWeight / 2) + (playerWeight / 2 * playerStamina / 10));
+  }
+
+  // Вычисление силы клетки: значение красного цвета (от 1 до 256)
+  // Это минимальная сила сбора, необходимая для тапа
+  private getCellPower(hexColor: string): number {
+    const { r } = this.getRGBComponents(hexColor);
+    return Math.max(1, r + 1); // От 1 до 256 (0-255 + 1)
+  }
+
+  // Использование клетки из инвентаря для восстановления сытости или получения опыта
+  async useInventoryItem(
+    clientId: string,
+    color: CellColor,
+    useType: 'satiety' | 'experience' = 'satiety',
+  ): Promise<{ success: boolean; satietyRestored: number; newSatiety: number; experienceGained: number; newExperience: number }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { success: false, satietyRestored: 0, newSatiety: 0, experienceGained: 0, newExperience: 0 };
+    }
+
+    // Проверяем, есть ли этот цвет в инвентаре
+    const count = player.inventory[color] ?? 0;
+    if (count <= 0) {
+      return { success: false, satietyRestored: 0, newSatiety: player.satiety, experienceGained: 0, newExperience: player.experience };
+    }
+
+    let satietyRestored = 0;
+    let experienceGained = 0;
+
+    if (useType === 'satiety') {
+      // Вычисляем восстановление сытости на основе зеленого компонента
+      const greenComponent = this.getGreenComponent(color);
+      satietyRestored = greenComponent;
+      // Восстанавливаем сытость (максимум weight)
+      player.satiety = Math.min(player.weight, player.satiety + satietyRestored);
+    } else if (useType === 'experience') {
+      // Вычисляем опыт на основе синего компонента
+      const { b } = this.getRGBComponents(color);
+      experienceGained = b;
+      // Добавляем опыт
+      player.experience += experienceGained;
+      // Проверяем достижение нового уровня
+      this.checkLevelUp(player);
+    }
+
+    // Уменьшаем количество клеток в инвентаре
+    player.inventory[color] = count - 1;
+    if (player.inventory[color] === 0) {
+      delete player.inventory[color];
+    }
+
+    // Сохраняем изменения в MongoDB
+    await this.savePlayer(player);
+
+    return {
+      success: true,
+      satietyRestored,
+      newSatiety: player.satiety,
+      experienceGained,
+      newExperience: player.experience,
+    };
+  }
+
+  // Проверка достижения нового уровня
+  private checkLevelUp(player: PlayerState): void {
+    const requiredExp = player.level * 255;
+    while (player.experience >= requiredExp) {
+      player.experience -= requiredExp;
+      player.level += 1;
+      player.availableUpgrades += 1;
+    }
+  }
+
+  // Изменить имя игрока
+  async changePlayerName(clientId: string, newName: string): Promise<{ success: boolean; message?: string }> {
+    if (!newName || newName.trim().length === 0) {
+      return { success: false, message: 'Имя не может быть пустым' };
+    }
+    
+    if (newName.trim().length > 50) {
+      return { success: false, message: 'Имя слишком длинное (максимум 50 символов)' };
+    }
+
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { success: false, message: 'Игрок не найден' };
+    }
+
+    player.name = newName.trim();
+    await this.savePlayer(player);
+    
+    return { success: true };
+  }
+
+  // Применить улучшение
+  async applyUpgrade(
+    clientId: string,
+    upgradeType: 'weight' | 'stamina' | 'collectionPower' | 'power' | 'maxHealth' | 'defense' | 'luck' | 'regeneration',
+  ): Promise<{ success: boolean; message?: string }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { success: false, message: 'Игрок не найден' };
+    }
+
+    if (player.availableUpgrades <= 0) {
+      return { success: false, message: 'Нет доступных улучшений' };
+    }
+
+    // Инициализируем новые параметры, если они undefined
+    if (player.health === undefined) player.health = 100;
+    if (player.maxHealth === undefined) player.maxHealth = 100;
+    if (player.defense === undefined) player.defense = 0;
+    if (player.luck === undefined) player.luck = 0;
+    if (player.regeneration === undefined) player.regeneration = 0;
+
+    switch (upgradeType) {
+      case 'weight':
+        // Увеличиваем вес на 10%
+        player.weight = Math.round(player.weight * 1.1);
+        // Также увеличиваем текущую сытость пропорционально
+        player.satiety = Math.round(player.satiety * 1.1);
+        break;
+      case 'stamina':
+        player.stamina += 1;
+        break;
+      case 'collectionPower':
+        player.collectionPower += 1;
+        break;
+      case 'power':
+        player.power += 1;
+        break;
+      case 'maxHealth':
+        // Увеличиваем максимальное здоровье на 20%
+        player.maxHealth = Math.round(player.maxHealth * 1.2);
+        // Также увеличиваем текущее здоровье пропорционально
+        player.health = Math.round(player.health * 1.2);
+        break;
+      case 'defense':
+        player.defense = (player.defense ?? 0) + 1;
+        break;
+      case 'luck':
+        player.luck = (player.luck ?? 0) + 1;
+        break;
+      case 'regeneration':
+        player.regeneration += 0.5;
+        break;
+    }
+
+    player.availableUpgrades -= 1;
+
+    // Убеждаемся, что все новые параметры инициализированы перед сохранением
+    if (player.health === undefined) player.health = 100;
+    if (player.maxHealth === undefined) player.maxHealth = 100;
+    if (player.defense === undefined) player.defense = 0;
+    if (player.luck === undefined) player.luck = 0;
+    if (player.regeneration === undefined) player.regeneration = 0;
+
+    // Сохраняем изменения игрока в MongoDB
+    await this.savePlayer(player);
+    
+    // Явно обновляем кеш после сохранения
+    this.playersCache.set(player.id, player);
+
+    return { success: true };
+  }
+
+  // Получить количество сытости, которое восстановит клетка
+  getSatietyRestore(color: CellColor): number {
+    return this.getGreenComponent(color);
+  }
+
+  // Получить силу клетки (публичный метод)
+  getCellPowerPublic(color: CellColor): number {
+    return this.getCellPower(color);
+  }
+
+  async movePlayer(clientId: string, position: CellPosition): Promise<PlayerState | undefined> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) return undefined;
+    
+    // Проверяем, изменилась ли позиция
+    if (player.position.x === position.x && player.position.y === position.y) {
+      return player; // Не двигаемся, не тратим сытость
+    }
+    
+    // Рассчитываем стоимость движения: weight * 0.01 * (collectionPower - stamina)
+    // Защита от отрицательного значения
+    const difference = Math.max(0, player.collectionPower - player.stamina);
+    const moveCost = Math.max(1, Math.round(player.weight * 0.01 * difference));
+    
+    // Проверяем, достаточно ли сытости для движения
+    if (player.satiety < moveCost) {
+      return player; // Недостаточно сытости для движения
+    }
+    
+    // Тратим сытость на ход
+    player.satiety = Math.max(0, player.satiety - moveCost);
+    
+    const oldKey = `${player.position.x}:${player.position.y}`;
+    player.position = position;
+    const newKey = `${position.x}:${position.y}`;
+    
+    // Удаляем игрока из старого чата в MongoDB
+    await this.localChatModel.updateOne(
+      { key: oldKey },
+      { $pull: { participants: clientId } },
+    );
+    
+    // Добавляем игрока в новый чат
+    await this.localChatModel.findOneAndUpdate(
+      { key: newKey },
+      {
+        $setOnInsert: {
+          key: newKey,
+          cellPosition: position,
+          participants: [],
+          messages: [],
+        },
+      },
+      { upsert: true },
+    );
+    await this.localChatModel.updateOne(
+      { key: newKey },
+      { $addToSet: { participants: clientId } },
+    );
+    
+    // Сохраняем изменения игрока
+    await this.savePlayer(player);
+    
+    return player;
+  }
+
+  // Получить или инициализировать жизни клетки
+  private async getOrInitCellHealth(pos: CellPosition): Promise<number> {
+    const key = `${pos.x}:${pos.y}`;
+    
+    // Получаем или создаем клетку с использованием upsert для избежания race condition
+    const color = await this.getCellColorInternal(pos);
+    const health = this.getCellPower(color);
+    
+    let cell = await this.cellModel.findOneAndUpdate(
+      { key },
+      {
+        $setOnInsert: {
+          key,
+          position: pos,
+          color,
+          health,
+          playerProgress: {},
+        },
+      },
+      { upsert: true, new: true }
+    ).exec();
+    
+    // Если клетка существовала, но у неё нет здоровья, инициализируем его
+    if (cell && (cell.health === undefined || cell.health === null)) {
+      cell.health = health;
+      await cell.save();
+      return health;
+    }
+    
+    return cell?.health ?? health;
+  }
+
+  // Внутренний метод для получения цвета без инициализации жизней
+  private async getCellColorInternal(pos: CellPosition): Promise<CellColor> {
+    const key = `${pos.x}:${pos.y}`;
+    const cell = await this.cellModel.findOne({ key }).exec();
+    if (cell && cell.color) {
+      return cell.color;
+    }
+
+    // Источники случайных цветов: если клетка находится рядом с источником — используем его цвет
+    for (const source of this.colorSources) {
+      const dx = pos.x - source.position.x;
+      const dy = pos.y - source.position.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance <= 2) {
+        return source.color;
+      }
+    }
+
+    return pseudoRandomColor(pos.x, pos.y);
+  }
+
+  // Публичный метод для получения цвета клетки
+  async getCellColor(pos: CellPosition): Promise<CellColor> {
+    return this.getCellColorInternal(pos);
+  }
+
+  async collectCell(clientId: string, pos: CellPosition): Promise<PlayerState | undefined> {
+    // Теперь сбор происходит только через тапы (tapColorCell)
+    // Этот метод оставлен для совместимости, но не используется напрямую
+    return this.getOrCreatePlayer(clientId);
+  }
+
+  async getPlayers(): Promise<PlayerState[]> {
+    // Используем кеш, если он актуален, иначе загружаем из MongoDB
+    // Для актуальности данных всегда загружаем из MongoDB, но обновляем кеш
+    const players = await this.playerModel.find().lean().exec();
+    const playerStates = players.map(p => {
+      const state = this.playerToState(p);
+      // Обновляем кеш актуальными данными
+      this.playersCache.set(state.id, state);
+      return state;
+    });
+    return playerStates;
+  }
+
+  async getViewportColors(center: CellPosition, radius: number): Promise<{
+    position: CellPosition;
+    color: CellColor;
+  }[]> {
+    const result: { position: CellPosition; color: CellColor }[] = [];
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const pos = { x: center.x + dx, y: center.y + dy };
+        const color = await this.getCellColorInternal(pos);
+        result.push({
+          position: pos,
+          color,
+        });
+      }
+    }
+    return result;
+  }
+
+  async getLeaderboard(onlinePlayers?: Set<string>): Promise<LeaderboardEntry[]> {
+    // Получаем игроков с полными данными из MongoDB (включая createdAt)
+    const playerDocs = await this.playerModel.find().lean().exec();
+    const now = Date.now();
+    
+    return playerDocs
+      .map<LeaderboardEntry>((p: any) => {
+        const createdAt = p.createdAt ? new Date(p.createdAt).getTime() : now;
+        const playTime = Math.floor((now - createdAt) / 1000); // В секундах
+        
+        return {
+          playerId: p.id,
+          name: p.name,
+          totalCollected: p.totalCollected || 0,
+          level: p.level || 1,
+          playTime,
+          isOnline: onlinePlayers ? onlinePlayers.has(p.id) : false,
+        };
+      })
+      .sort((a, b) => b.totalCollected - a.totalCollected)
+      .slice(0, 50);
+  }
+
+  async addChatMessage(
+    clientId: string,
+    text: string,
+  ): Promise<{ message: ChatMessage; player: PlayerState | undefined }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    const message: ChatMessage = {
+      id: randomUUID(),
+      playerId: clientId,
+      name: player?.name ?? 'Unknown',
+      text,
+      createdAt: Date.now(),
+    };
+    
+    // Добавляем сообщение в MongoDB
+    await this.chatModel.findOneAndUpdate(
+      { id: 'global' },
+      {
+        $push: {
+          messages: {
+            $each: [message],
+            $slice: -100, // Оставляем только последние 100 сообщений
+          },
+        },
+      },
+      { upsert: true },
+    );
+
+    return { message, player };
+  }
+
+  async getRecentMessages(): Promise<ChatMessage[]> {
+    const chat = await this.chatModel.findOne({ id: 'global' }).lean().exec();
+    if (!chat) return [];
+    return (chat.messages || []).slice(-50);
+  }
+
+  // Обработка тапа по белой клетке
+  async tapWhiteCell(pos: CellPosition): Promise<{
+    exploded: boolean;
+    affectedCells: { position: CellPosition; color: CellColor }[];
+  }> {
+    const key = `${pos.x}:${pos.y}`;
+    const currentColor = await this.getCellColorInternal(pos);
+
+    // Проверяем, что клетка белая
+    if (currentColor !== '#ffffff') {
+      return { exploded: false, affectedCells: [] };
+    }
+
+    // Получаем или создаем клетку с использованием upsert для избежания race condition
+    let cell = await this.cellModel.findOneAndUpdate(
+      { key },
+      {
+        $setOnInsert: {
+          key,
+          position: pos,
+          color: currentColor,
+          health: null,
+          playerProgress: {},
+        },
+      },
+      { upsert: true, new: true }
+    ).exec();
+
+    // Используем playerProgress для хранения счетчика тапов (используем ключ 'whiteTaps')
+    const currentTaps = ((cell.playerProgress as any)['whiteTaps'] ?? 0) + 1;
+    (cell.playerProgress as any)['whiteTaps'] = currentTaps;
+    await cell.save();
+
+    // Если достигли 10 тапов - взрываем
+    if (currentTaps >= 10) {
+      return await this.explodeWhiteCells(pos);
+    }
+
+    return { exploded: false, affectedCells: [] };
+  }
+
+  // Взрыв белых клеток в радиусе 3
+  private async explodeWhiteCells(center: CellPosition): Promise<{
+    exploded: boolean;
+    affectedCells: { position: CellPosition; color: CellColor }[];
+  }> {
+    const affectedCells: { position: CellPosition; color: CellColor }[] = [];
+    const radius = 3;
+
+    // Находим все белые клетки в радиусе 3
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > radius) continue;
+
+        const pos = { x: center.x + dx, y: center.y + dy };
+        const key = `${pos.x}:${pos.y}`;
+        const cellColor = await this.getCellColorInternal(pos);
+
+        // Если клетка белая - превращаем в случайный цвет
+        if (cellColor === '#ffffff') {
+          // Генерируем случайный цвет из палитры
+          const randomIndex = Math.floor(
+            Math.random() * BASE_COLORS.length,
+          );
+          const newColor = BASE_COLORS[randomIndex];
+          
+          // Обновляем клетку в MongoDB
+          await this.cellModel.findOneAndUpdate(
+            { key },
+            {
+              $set: {
+                color: newColor,
+                'playerProgress.whiteTaps': 0, // Сбрасываем счетчик
+              },
+            },
+            { upsert: true },
+          );
+          
+          affectedCells.push({ position: pos, color: newColor });
+        }
+      }
+    }
+
+    return { exploded: true, affectedCells };
+  }
+
+  // Обработка тапа по цветной клетке для сбора цвета
+  async tapColorCell(
+    clientId: string,
+    pos: CellPosition,
+  ): Promise<{
+    collected: boolean;
+    progress: number;
+    required: number;
+    color: CellColor;
+    health: number;
+    winnerId?: string;
+    collectedAmount?: number;
+  }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { collected: false, progress: 0, required: 0, color: '#000000', health: 0 };
+    }
+
+    const cellColor = await this.getCellColorInternal(pos);
+    if (cellColor === '#ffffff') {
+      return { collected: false, progress: 0, required: 0, color: '#ffffff', health: 0 };
+    }
+
+    // Проверяем, достаточно ли силы сбора для тапа
+    // Клетку можно тапать, если её сила меньше чем collectionPower * (power/2 + stamina/2 - defense)
+    const cellPower = this.getCellPower(cellColor);
+    const multiplier = (player.power / 2) + (player.stamina / 2) - (player.defense ?? 0);
+    // Защита от отрицательного или слишком маленького множителя
+    const safeMultiplier = Math.max(0.1, multiplier);
+    if (cellPower >= player.collectionPower * safeMultiplier) {
+      // Недостаточно силы сбора - возвращаем текущее состояние
+      const key = `${pos.x}:${pos.y}`;
+      const health = await this.getOrInitCellHealth(pos);
+      const cell = await this.cellModel.findOne({ key }).exec();
+      const currentProgress = cell?.playerProgress?.[clientId] ?? 0;
+      return {
+        collected: false,
+        progress: currentProgress,
+        required: health,
+        color: cellColor,
+        health: health,
+      };
+    }
+
+    // Проверяем, есть ли место в инвентаре для потенциального сбора
+    // Проверяем минимальный вес (1 единица), чтобы убедиться, что хотя бы 1 единица поместится
+    const minItemWeight = this.getItemWeight(cellColor, 1);
+    const currentWeight = this.getInventoryWeight(player.inventory);
+    const maxWeight = this.getMaxInventoryWeight(player.weight, player.stamina);
+    
+    // Если даже минимальный вес (1 единица) не поместится, запрещаем тап
+    if (currentWeight + minItemWeight > maxWeight) {
+      // Нет места в инвентаре - возвращаем текущее состояние
+      const key = `${pos.x}:${pos.y}`;
+      const health = await this.getOrInitCellHealth(pos);
+      const cell = await this.cellModel.findOne({ key }).exec();
+      const currentProgress = cell?.playerProgress?.[clientId] ?? 0;
+      return {
+        collected: false,
+        progress: currentProgress,
+        required: health,
+        color: cellColor,
+        health: health,
+      };
+    }
+
+    const key = `${pos.x}:${pos.y}`;
+    
+    // Получаем или создаем клетку с использованием upsert для избежания race condition
+    const health = await this.getOrInitCellHealth(pos);
+    let cell = await this.cellModel.findOneAndUpdate(
+      { key },
+      {
+        $setOnInsert: {
+          key,
+          position: pos,
+          color: cellColor,
+          health,
+          playerProgress: {},
+        },
+      },
+      { upsert: true, new: true }
+    ).exec();
+    
+    // Инициализируем здоровье, если нужно (для существующих клеток без здоровья)
+    if (cell.health === undefined || cell.health === null) {
+      cell.health = health;
+      await cell.save();
+    }
+    
+    // Увеличиваем прогресс игрока на силу сбора
+    const currentProgress = (cell.playerProgress[clientId] ?? 0) + player.collectionPower;
+    cell.playerProgress[clientId] = currentProgress;
+    
+    // Уменьшаем жизни клетки на силу сбора
+    cell.health -= player.collectionPower;
+    
+    let collectedAmount: number | undefined;
+    let winnerId: string | undefined;
+    let isCollected = false;
+    
+    // Если жизни <= 0, определяем победителя
+    if (cell.health <= 0) {
+      isCollected = true;
+      
+      // Находим игрока с наибольшим прогрессом
+      let maxProgress = 0;
+      
+      for (const [playerId, progress] of Object.entries(cell.playerProgress)) {
+        if (progress > maxProgress) {
+          maxProgress = progress;
+          winnerId = playerId;
+        }
+      }
+      
+      // Если победитель не найден, но есть прогресс, берем первого игрока из прогресса
+      // (это может произойти, если клетка собрана одним игроком)
+      if (!winnerId && Object.keys(cell.playerProgress).length > 0) {
+        winnerId = Object.keys(cell.playerProgress)[0];
+      }
+      
+      // Если есть победитель, отдаем клетку ему
+      if (winnerId) {
+        const winner = await this.getOrCreatePlayer(winnerId);
+        if (winner) {
+          // Вычисляем количество собранных единиц как рандомное от 1 до ceil(r/32)
+          const { r } = this.getRGBComponents(cellColor);
+          const maxAmount = Math.max(1, Math.ceil(r / 32));
+          const baseAmount = Math.floor(Math.random() * maxAmount) + 1;
+          // Добавляем бонус от удачи: каждые 5 единиц удачи дают +1 к количеству
+          const luckBonus = Math.floor(winner.luck / 5);
+          collectedAmount = baseAmount + luckBonus;
+          
+          // Проверяем ограничение по весу инвентаря
+          const currentWeight = this.getInventoryWeight(winner.inventory);
+          const maxWeight = this.getMaxInventoryWeight(winner.weight, winner.stamina);
+          
+          // Вычисляем вес добавляемых предметов
+          const itemWeight = this.getItemWeight(cellColor, collectedAmount);
+          
+          // Если добавление предметов превысит максимальный вес, не добавляем
+          if (currentWeight + itemWeight > maxWeight) {
+            // Не добавляем предметы, если превышен лимит веса
+            // Сбрасываем collectedAmount, чтобы не отправлять событие анимации
+            collectedAmount = undefined;
+          } else {
+            const hasColor = winner.inventory[cellColor] !== undefined && winner.inventory[cellColor] > 0;
+            
+            let newCount: number;
+            if (hasColor) {
+              newCount = (winner.inventory[cellColor] ?? 0) + collectedAmount;
+            } else {
+              newCount = collectedAmount;
+              if (!winner.unlockedColors.includes(cellColor)) {
+                winner.unlockedColors.push(cellColor);
+              }
+            }
+            
+            // Просто устанавливаем новое количество без проверки на превышение номера цвета
+            winner.inventory[cellColor] = newCount;
+            
+            winner.totalCollected += collectedAmount;
+            
+            // Логика открытия новых цветов
+            const currentColors = winner.unlockedColors.length;
+            const nextColor = BASE_COLORS[currentColors];
+            const requiredForNext = currentColors * currentColors;
+            
+            if (
+              nextColor &&
+              winner.totalCollected >= requiredForNext &&
+              !winner.unlockedColors.includes(nextColor)
+            ) {
+              winner.unlockedColors.push(nextColor);
+              // Не добавляем цвет в инвентарь с количеством 0 - он добавится только при сборе
+            }
+            
+            // Сохраняем изменения победителя только если предметы были добавлены
+            await this.savePlayer(winner);
+          }
+        }
+      }
+      
+      // Клетка становится белой
+      cell.color = '#ffffff';
+      cell.health = undefined;
+      cell.playerProgress = {};
+    }
+    
+    // Сохраняем изменения клетки
+    await cell.save();
+    
+    return {
+      collected: isCollected,
+      progress: currentProgress,
+      required: cell.health ?? 0,
+      color: cellColor,
+      health: cell.health ?? 0,
+      winnerId,
+      collectedAmount,
+    };
+  }
+
+  // Получить прогресс тапов для клетки
+  async getColorCellProgress(clientId: string, pos: CellPosition): Promise<{
+    progress: number;
+    required: number;
+    color: CellColor;
+    health: number;
+  }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { progress: 0, required: 0, color: '#000000', health: 0 };
+    }
+
+    const cellColor = await this.getCellColorInternal(pos);
+    if (cellColor === '#ffffff') {
+      return { progress: 0, required: 0, color: '#ffffff', health: 0 };
+    }
+
+    const key = `${pos.x}:${pos.y}`;
+    const health = await this.getOrInitCellHealth(pos);
+    const cell = await this.cellModel.findOne({ key }).exec();
+    const progress = cell?.playerProgress?.[clientId] ?? 0;
+
+    return { progress, required: health, color: cellColor, health };
+  }
+
+  // Атака на другого игрока
+  async attackPlayer(
+    attackerId: string,
+    targetId: string,
+  ): Promise<{ success: boolean; damage: number; targetSatiety: number }> {
+    const attacker = await this.getOrCreatePlayer(attackerId);
+    const target = await this.getOrCreatePlayer(targetId);
+
+    if (!attacker || !target) {
+      return { success: false, damage: 0, targetSatiety: 0 };
+    }
+
+    // Нельзя атаковать самого себя
+    if (attackerId === targetId) {
+      return { success: false, damage: 0, targetSatiety: target.satiety };
+    }
+
+    // Вычисляем урон на основе силы атакующего
+    const damage = attacker.power;
+
+    // Отнимаем сытость у цели
+    target.satiety = Math.max(0, target.satiety - damage);
+
+    // Сохраняем изменения цели
+    await this.savePlayer(target);
+
+    return {
+      success: true,
+      damage,
+      targetSatiety: target.satiety,
+    };
+  }
+
+  // Получить личный чат для позиции клетки
+  async getLocalChat(pos: CellPosition): Promise<LocalChat | null> {
+    const key = `${pos.x}:${pos.y}`;
+    const localChat = await this.localChatModel.findOne({ key }).lean().exec();
+    if (!localChat) return null;
+    
+    return {
+      cellPosition: localChat.cellPosition,
+      participants: localChat.participants || [],
+      messages: (localChat.messages || []) as LocalChatMessage[],
+    };
+  }
+
+  // Отправить сообщение в личный чат
+  async addLocalChatMessage(
+    clientId: string,
+    pos: CellPosition,
+    text: string,
+  ): Promise<{ success: boolean; message?: LocalChatMessage }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { success: false };
+    }
+
+    const key = `${pos.x}:${pos.y}`;
+    
+    // Получаем или создаем чат
+    let localChat = await this.localChatModel.findOne({ key }).exec();
+    if (!localChat) {
+      localChat = new this.localChatModel({
+        key,
+        cellPosition: pos,
+        participants: [clientId],
+        messages: [],
+      });
+      await localChat.save();
+    }
+
+    // Проверяем, что игрок в чате
+    if (!localChat.participants.includes(clientId)) {
+      return { success: false };
+    }
+
+    const message: LocalChatMessage = {
+      id: randomUUID(),
+      playerId: clientId,
+      name: player.name,
+      text: text.trim(),
+      createdAt: Date.now(),
+      cellPosition: pos,
+    };
+
+    // Добавляем сообщение
+    localChat.messages.push(message);
+    // Ограничиваем количество сообщений (последние 50)
+    if (localChat.messages.length > 50) {
+      localChat.messages = localChat.messages.slice(-50) as any;
+    }
+    
+    await localChat.save();
+
+    return { success: true, message };
+  }
+
+  // Получить участников чата для позиции
+  async getLocalChatParticipants(pos: CellPosition): Promise<string[]> {
+    const key = `${pos.x}:${pos.y}`;
+    const chat = await this.localChatModel.findOne({ key }).lean().exec();
+    return chat?.participants || [];
+  }
+
+  // Удалить игрока из чата (используется при отключении)
+  async removePlayerFromLocalChat(clientId: string, pos: CellPosition): Promise<void> {
+    const key = `${pos.x}:${pos.y}`;
+    const chat = await this.localChatModel.findOne({ key }).exec();
+    if (chat) {
+      const index = chat.participants.indexOf(clientId);
+      if (index > -1) {
+        chat.participants.splice(index, 1);
+        // Если чат пуст, удаляем его
+        if (chat.participants.length === 0) {
+          await this.localChatModel.deleteOne({ key });
+        } else {
+          await chat.save();
+        }
+      }
+    }
+  }
+}
+

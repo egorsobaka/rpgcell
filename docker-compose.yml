@@ -1,0 +1,90 @@
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: rpg-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: rpg_game
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - rpg-network
+
+  backend:
+    build:
+      context: ./backend/backend-app
+      dockerfile: Dockerfile
+    container_name: rpg-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/rpg_game?authSource=admin
+      NODE_ENV: production
+    depends_on:
+      - mongodb
+    networks:
+      - rpg-network
+
+  frontend:
+    build:
+      context: ./frontend/frontend-app
+      dockerfile: Dockerfile
+    container_name: rpg-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - rpg-network
+
+  # Dev backend (NestJS hot-reload, source mounted из хоста)
+  backend-dev:
+    image: node:20-alpine
+    working_dir: /app
+    container_name: rpg-backend-dev
+    command: sh -c "npm install && npm run start:dev"
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/rpg_game?authSource=admin
+      NODE_ENV: development
+    volumes:
+      - ./backend/backend-app:/app
+      - /app/node_modules
+    depends_on:
+      - mongodb
+    networks:
+      - rpg-network
+
+  # Dev frontend (Vite dev server, source mounted из хоста)
+  frontend-dev:
+    image: node:20-alpine
+    working_dir: /app
+    container_name: rpg-frontend-dev
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ./frontend/frontend-app:/app
+      - /app/node_modules
+    depends_on:
+      - backend-dev
+    networks:
+      - rpg-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  rpg-network:
+    driver: bridge
