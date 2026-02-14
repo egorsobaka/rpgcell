@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import './App.css';
 import { PhaserGame } from './game/PhaserGame';
+import { getParamHelp } from './playerParamsHelp';
 
 interface CellPosition {
   x: number;
@@ -452,6 +453,7 @@ function App() {
   const tapAmountCallbackRef = useRef<((position: CellPosition, amount: number) => void) | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editingName, setEditingName] = useState('');
+  const [helpTooltip, setHelpTooltip] = useState<{ param: string; x: number; y: number } | null>(null);
 
   useEffect(() => {
     // Проверяем сохраненный ID игрока
@@ -1268,18 +1270,62 @@ function App() {
                   />
                 </div>
                 <span className="stat-value">{me.satiety}/{me.weight}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'satiety', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Вес:</span>
                 <span className="stat-value">{me.weight}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'weight', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Выносливость:</span>
                 <span className="stat-value">{me.stamina}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'stamina', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Сила сбора:</span>
                 <span className="stat-value">{me.collectionPower}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'collectionPower', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Кол-во за тап:</span>
@@ -1291,6 +1337,17 @@ function App() {
                     return Math.max(1, Math.ceil(me.collectionPower * multiplier));
                   })()}
                 </span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'collected-per-tap', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Множитель сбора:</span>
@@ -1300,6 +1357,17 @@ function App() {
                     const safeMultiplier = Math.max(0.1, multiplier);
                     return safeMultiplier.toFixed(2);
                   })()}
+                </span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'collection-multiplier', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
                 </span>
               </div>
               <div className="stat-item">
@@ -1312,6 +1380,17 @@ function App() {
                     return maxCellPower;
                   })()}
                 </span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'max-cell-power', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Сытость на ход:</span>
@@ -1322,39 +1401,153 @@ function App() {
                     return moveCost;
                   })()}
                 </span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'move-cost', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Опыт:</span>
                 <span className="stat-value">{me.experience}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'experience', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Сила:</span>
                 <span className="stat-value">{me.power}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'power', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Здоровье:</span>
                 <span className="stat-value">{me.health ?? 100}/{me.maxHealth ?? 100}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'health', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Макс. здоровье:</span>
+                <span className="stat-value">{me.maxHealth ?? 100}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'maxHealth', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Защита:</span>
                 <span className="stat-value">{me.defense ?? 0}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'defense', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Удача:</span>
                 <span className="stat-value">{me.luck ?? 0}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'luck', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Регенерация:</span>
                 <span className="stat-value">{me.regeneration ?? 0}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'regeneration', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Уровень:</span>
                 <span className="stat-value">{me.level}</span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'level', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Опыт до след. уровня:</span>
                 <span className="stat-value">
                   {me.experience}/{me.level * 255}
+                </span>
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'experience-to-next', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
                 </span>
               </div>
               {me.availableUpgrades > 0 && (
@@ -1979,6 +2172,110 @@ if (experience >= requiredExperience):
           <span className="local-chat-badge">{localChat.participants.filter(p => p.id !== me?.id).length}</span>
         </button>
       )}
+
+      {/* Подсказка с описанием параметра - полноэкранное окно */}
+      {helpTooltip && (() => {
+        const help = getParamHelp(helpTooltip.param);
+        if (!help) return null;
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.8)',
+              zIndex: 10000,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '20px',
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setHelpTooltip(null);
+              }
+            }}
+          >
+            <div
+              style={{
+                backgroundColor: 'rgba(15, 23, 42, 0.98)',
+                border: '2px solid #60a5fa',
+                borderRadius: '12px',
+                padding: '24px',
+                maxWidth: '800px',
+                width: '100%',
+                maxHeight: '90vh',
+                overflowY: 'auto',
+                fontSize: '14px',
+                color: '#e5e7eb',
+                lineHeight: '1.6',
+                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.7)',
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <strong style={{ color: '#60a5fa', fontSize: '20px' }}>{help.name}</strong>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setHelpTooltip(null);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#94a3b8',
+                    cursor: 'pointer',
+                    fontSize: '24px',
+                    padding: '0',
+                    lineHeight: '1',
+                    width: '32px',
+                    height: '32px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: '4px',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(148, 163, 184, 0.2)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <div style={{ marginBottom: '16px', color: '#cbd5e1', fontSize: '16px' }}>{help.description}</div>
+              <div style={{ marginBottom: '12px' }}>
+                <strong style={{ color: '#94a3b8', fontSize: '16px' }}>Откуда берется:</strong>
+                <div style={{ marginTop: '8px', color: '#cbd5e1', fontSize: '14px' }}>{help.source}</div>
+              </div>
+              <div style={{ marginBottom: '12px' }}>
+                <strong style={{ color: '#94a3b8', fontSize: '16px' }}>Как рассчитывается:</strong>
+                <div style={{ marginTop: '8px', color: '#cbd5e1', fontSize: '14px' }}>{help.calculation}</div>
+              </div>
+              <div style={{ marginBottom: '12px' }}>
+                <strong style={{ color: '#94a3b8', fontSize: '16px' }}>На что влияет:</strong>
+                <div style={{ marginTop: '8px', color: '#cbd5e1', fontSize: '14px' }}>{help.effects}</div>
+              </div>
+              {help.initialValue && (
+                <div style={{ marginBottom: '12px', fontSize: '14px', color: '#94a3b8' }}>
+                  <strong>Начальное значение:</strong> {help.initialValue}
+                </div>
+              )}
+              {help.upgrade && (
+                <div style={{ fontSize: '14px', color: '#94a3b8' }}>
+                  <strong>Улучшение:</strong> {help.upgrade}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
