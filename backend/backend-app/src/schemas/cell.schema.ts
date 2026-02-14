@@ -33,6 +33,12 @@ export class Cell {
 
   @Prop({ type: Number, required: false })
   power?: number; // Сила клетки (1-256, влияет на яркость)
+
+  @Prop({ type: Number, required: false, default: 0 })
+  constructionPoints?: number; // Очки строительства (чем больше, тем темнее клетка)
+
+  @Prop({ type: Number, required: false })
+  constructionType?: number; // Тип строительного материала (еда / 32)
 }
 
 export const CellSchema = SchemaFactory.createForClass(Cell);

@@ -292,12 +292,14 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const playerId = this.getPlayerId(client);
     const player = await this.gameService.collectCell(playerId, body.position);
     if (!player) return;
-    const { color: cellColor, params } = await this.gameService.getCellColorInternalPublic(body.position);
+    const { color: cellColor, params, constructionPoints, constructionType } = await this.gameService.getCellColorInternalPublic(body.position);
 
     this.server.emit('cell:updated', {
       position: body.position,
       color: cellColor,
       params,
+      constructionPoints,
+      constructionType,
     });
 
     await this.broadcastPlayers();
@@ -331,11 +333,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Если цвет собран - обновляем клетку и рассылаем обновления
     if (result.collected) {
-      const { color, params } = await this.gameService.getCellColorInternalPublic(body.position);
+      // Клетка уже сохранена как белая в tapColorCell, просто отправляем обновление
       this.server.emit('cell:updated', {
         position: body.position,
         color: '#ffffff',
-        params: params ? { ...params, food: 0, building: 0, experience: 0, power: 1 } : undefined,
+        params: { food: 0, building: 0, experience: 0, power: 1 },
       });
       
       // Отправляем анимацию сбора ресурсов победителю
@@ -396,11 +398,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (result.exploded) {
       // Отправляем обновления для всех затронутых клеток
       for (const cell of result.affectedCells) {
-        const { params } = await this.gameService.getCellColorInternalPublic(cell.position);
+        const { params, constructionPoints, constructionType } = await this.gameService.getCellColorInternalPublic(cell.position);
         this.server.emit('cell:updated', {
           position: cell.position,
           color: cell.color,
           params,
+          constructionPoints,
+          constructionType,
         });
       }
     }
@@ -461,6 +465,42 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private async broadcastPlayers(): Promise<void> {
     const players = await this.gameService.getPlayers();
     this.server.emit('players:update', players);
+  }
+
+  @SubscribeMessage('inventory:drop')
+  async handleDropInventory(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { color: string; count: number },
+  ): Promise<void> {
+    const playerId = this.getPlayerId(client);
+    const result = await this.gameService.dropInventoryOnCell(
+      playerId,
+      body.color,
+      body.count,
+    );
+    
+    if (result.success) {
+      // Получаем позицию игрока для обновления клетки
+      const player = await this.gameService.getPlayerById(playerId);
+      if (player) {
+        await this.broadcastPlayers();
+        // Отправляем обновление клетки
+        const cellData = await this.gameService.getCellColorInternalPublic(player.position);
+        this.server.emit('cell:updated', {
+          position: player.position,
+          color: cellData.color,
+          params: cellData.params,
+          constructionPoints: result.constructionPoints,
+          constructionType: result.constructionType,
+        });
+      }
+    }
+    
+    client.emit('inventory:dropped', {
+      success: result.success,
+      message: result.message,
+      constructionPoints: result.constructionPoints,
+    });
   }
 
   private async broadcastLeaderboard(): Promise<void> {

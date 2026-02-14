@@ -81,4 +81,6 @@ export interface CellData {
   position: CellPosition;
   color: CellColor;
   params?: CellParams; // Опционально, для обратной совместимости
+  constructionPoints?: number; // Очки строительства
+  constructionType?: number; // Тип строительного материала
 }

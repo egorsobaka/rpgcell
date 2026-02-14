@@ -1138,7 +1138,7 @@ section h2 {
   padding: 8px;
   border-radius: 6px;
   border: 1px solid rgba(255, 215, 0, 0.3);
-}
+  }
 
 @media (max-width: 900px) {
   .upgrade-options {

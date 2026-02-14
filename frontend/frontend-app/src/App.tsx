@@ -429,6 +429,12 @@ function App() {
   const [cellParams, setCellParams] = useState<Map<string, CellParams>>(
     () => new Map(),
   );
+  const [cellConstructionPoints, setCellConstructionPoints] = useState<Map<string, number>>(
+    () => new Map(),
+  );
+  const [cellConstructionTypes, setCellConstructionTypes] = useState<Map<string, number>>(
+    () => new Map(),
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -516,7 +522,7 @@ function App() {
       (payload: {
         center: CellPosition;
         radius: number;
-        cells: { position: CellPosition; color: string; params?: CellParams }[];
+        cells: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number }[];
       }) => {
         setCellColors((prev) => {
           const next = new Map(prev);
@@ -534,6 +540,37 @@ function App() {
               next.set(key, cell.params);
               // Также сохраняем параметры по цвету для использования в инвентаре
               next.set(cell.color, cell.params);
+            }
+          }
+          return next;
+        });
+        
+        // Обновляем строительные очки из payload
+        setCellConstructionPoints((prev) => {
+          const next = new Map(prev);
+          for (const cell of payload.cells) {
+            const key = `${cell.position.x}:${cell.position.y}`;
+            if (cell.constructionPoints !== undefined && cell.constructionPoints > 0) {
+              next.set(key, cell.constructionPoints);
+            } else {
+              // Удаляем из карты, если клетка больше не является строительным материалом
+              next.delete(key);
+            }
+          }
+          return next;
+        });
+        
+        // Обновляем типы строительных материалов из payload
+        setCellConstructionTypes((prev) => {
+          const next = new Map(prev);
+          for (const cell of payload.cells) {
+            const key = `${cell.position.x}:${cell.position.y}`;
+            // constructionType может быть 0, поэтому проверяем !== undefined и !== null
+            if (cell.constructionType !== undefined && cell.constructionType !== null) {
+              next.set(key, cell.constructionType);
+            } else {
+              // Удаляем из карты, если клетка больше не имеет типа
+              next.delete(key);
             }
           }
           return next;
@@ -559,7 +596,13 @@ function App() {
       }
     });
 
-    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams }) => {
+    s.on('inventory:dropped', (data: { success: boolean; message?: string; constructionPoints?: number }) => {
+      if (!data.success && data.message) {
+        alert(data.message);
+      }
+    });
+
+    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number }) => {
       const key = `${data.position.x}:${data.position.y}`;
       
       // Обновляем цвет клетки
@@ -576,6 +619,43 @@ function App() {
           next.set(key, data.params!);
           // Также сохраняем параметры по цвету для использования в инвентаре
           next.set(data.color, data.params!);
+          return next;
+        });
+      }
+      
+      // Обновляем строительные очки
+      if (data.constructionPoints !== undefined && data.constructionPoints > 0) {
+        setCellConstructionPoints((prev) => {
+          const next = new Map(prev);
+          next.set(key, data.constructionPoints!);
+          return next;
+        });
+        // Обновляем тип строительного материала
+        if (data.constructionType !== undefined) {
+          setCellConstructionTypes((prev) => {
+            const next = new Map(prev);
+            next.set(key, data.constructionType!);
+            return next;
+          });
+        }
+        // Для серых клеток обновляем здоровье = building * 10
+        if (data.params && data.params.building > 0) {
+          setCellHealth((prev) => {
+            const next = new Map(prev);
+            next.set(key, data.params!.building * 10);
+            return next;
+          });
+        }
+      } else if (data.color === '#ffffff') {
+        // Удаляем строительные очки и тип для белых клеток
+        setCellConstructionPoints((prev) => {
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
+        setCellConstructionTypes((prev) => {
+          const next = new Map(prev);
+          next.delete(key);
           return next;
         });
       }
@@ -922,6 +1002,24 @@ function App() {
   return (
           <section className="sidebar-section">
             <h2>Инвентарь</h2>
+            {me && (() => {
+              const cellColorAtPlayer = getCellColor(me.position);
+              const rgb = getRGBComponents(cellColorAtPlayer);
+              const isWhite = cellColorAtPlayer === '#ffffff';
+              const isGray = rgb.r === rgb.g && rgb.g === rgb.b && cellColorAtPlayer !== '#ffffff';
+              return !isWhite && !isGray;
+            })() && (
+              <div style={{ 
+                marginBottom: '12px', 
+                padding: '8px', 
+                backgroundColor: '#f59e0b', 
+                borderRadius: '4px',
+                color: '#fff',
+                fontSize: '12px',
+              }}>
+                ⚠️ Встаньте на белую клетку или клетку со строительным материалом для сброса инвентаря
+              </div>
+            )}
             {me ? (
               <>
                 <div style={{ marginBottom: '12px', padding: '8px', backgroundColor: '#1e293b', borderRadius: '4px' }}>
@@ -970,6 +1068,76 @@ function App() {
                             title={`Получить ${experienceGain} опыта`}
                           >
                             ⭐ +{experienceGain}
+                          </button>
+                          <button
+                            className="use-item-button"
+                            onClick={() => {
+                              // Сбрасываем инвентарь на клетку, где стоит игрок
+                              if (!me) return;
+                              const cellColorAtPlayer = getCellColor(me.position);
+                              const rgb = getRGBComponents(cellColorAtPlayer);
+                              const isWhite = cellColorAtPlayer === '#ffffff';
+                              const isGray = rgb.r === rgb.g && rgb.g === rgb.b && cellColorAtPlayer !== '#ffffff';
+                              
+                              if (!isWhite && !isGray) {
+                                alert('Встаньте на белую клетку или клетку со строительным материалом для сброса инвентаря');
+                                return;
+                              }
+                              
+                              // Проверяем тип, если это строительный материал
+                              if (isGray) {
+                                const key = `${me.position.x}:${me.position.y}`;
+                                const cellType = cellConstructionTypes.get(key);
+                                const itemParams = cellParams.get(color);
+                                const itemExperience = itemParams?.experience ?? getRGBComponents(color).b;
+                                const itemType = Math.ceil(itemExperience / 10);
+                                
+                                if (cellType !== undefined && itemType !== cellType) {
+                                  alert(`Можно сбрасывать только в клетку типа ${cellType}. Тип предмета: ${itemType}`);
+                                  return;
+                                }
+                              }
+                              
+                              socket?.emit('inventory:drop', {
+                                color,
+                                count: 1,
+                              });
+                            }}
+                            disabled={count <= 0 || !me || (() => {
+                              if (!me) return true;
+                              const cellColorAtPlayer = getCellColor(me.position);
+                              const rgb = getRGBComponents(cellColorAtPlayer);
+                              const isWhite = cellColorAtPlayer === '#ffffff';
+                              const isGray = rgb.r === rgb.g && rgb.g === rgb.b && cellColorAtPlayer !== '#ffffff';
+                              return !isWhite && !isGray;
+                            })()}
+                            title={!me ? 'Игрок не найден' : (() => {
+                              const cellColorAtPlayer = getCellColor(me.position);
+                              const rgb = getRGBComponents(cellColorAtPlayer);
+                              const isWhite = cellColorAtPlayer === '#ffffff';
+                              const isGray = rgb.r === rgb.g && rgb.g === rgb.b && cellColorAtPlayer !== '#ffffff';
+                              if (!isWhite && !isGray) {
+                                return 'Встаньте на белую клетку или клетку со строительным материалом';
+                              }
+                              return 'Сбросить на клетку, где вы стоите';
+                            })()}
+                            style={{
+                              backgroundColor: '#475569',
+                              color: '#fff',
+                              border: 'none',
+                              padding: '4px 8px',
+                              borderRadius: '4px',
+                              cursor: (count > 0 && me && (() => {
+                                const cellColorAtPlayer = getCellColor(me.position);
+                                const rgb = getRGBComponents(cellColorAtPlayer);
+                                const isWhite = cellColorAtPlayer === '#ffffff';
+                                const isGray = rgb.r === rgb.g && rgb.g === rgb.b && cellColorAtPlayer !== '#ffffff';
+                                return isWhite || isGray;
+                              })()) ? 'pointer' : 'not-allowed',
+                              fontSize: '11px',
+                            }}
+                          >
+                            🏗️ Сбросить
                           </button>
       </div>
                       </li>
@@ -1926,6 +2094,8 @@ if (experience >= requiredExperience):
             collectibleColors={me?.unlockedColors ?? []}
             colorCellProgress={colorCellProgress}
             cellHealth={cellHealth}
+            cellConstructionPoints={cellConstructionPoints}
+            cellConstructionTypes={cellConstructionTypes}
             playerSatiety={me?.satiety}
             playerWeight={me?.weight}
             playerCollectionPower={me?.collectionPower}

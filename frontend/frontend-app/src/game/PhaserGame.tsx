@@ -27,6 +27,8 @@ export interface PhaserGameProps {
   collectibleColors: string[];
   colorCellProgress: Map<string, { progress: number; required: number }>;
   cellHealth: Map<string, number>;
+  cellConstructionPoints?: Map<string, number>;
+  cellConstructionTypes?: Map<string, number>;
   playerSatiety?: number;
   playerWeight?: number;
   playerCollectionPower?: number;
@@ -154,6 +156,14 @@ export function PhaserGame(props: PhaserGameProps) {
       private renderCenterX = 0;
       private renderCenterY = 0;
       private progressTexts = new Map<
+        string,
+        Phaser.GameObjects.Text
+      >();
+      private constructionPointsTexts = new Map<
+        string,
+        Phaser.GameObjects.Text
+      >();
+      private constructionTypeTexts = new Map<
         string,
         Phaser.GameObjects.Text
       >();
@@ -663,6 +673,8 @@ export function PhaserGame(props: PhaserGameProps) {
           getCellColor,
           colorCellProgress,
           cellHealth,
+          cellConstructionPoints = new Map(),
+          cellConstructionTypes = new Map(),
           selectedCell,
         } = propsRef.current;
         this.graphics.clear();
@@ -745,6 +757,15 @@ export function PhaserGame(props: PhaserGameProps) {
             const progressKey = `${worldX}:${worldY}`;
             const health = cellHealth.get(progressKey);
             const progress = colorCellProgress.get(progressKey);
+            const constructionPoints = cellConstructionPoints?.get(progressKey);
+            const constructionType = cellConstructionTypes?.get(progressKey);
+            
+            // Проверяем, является ли клетка серой (строительный материал)
+            const rgb = parseInt(color.replace('#', ''), 16);
+            const r = (rgb >> 16) & 0xff;
+            const g = (rgb >> 8) & 0xff;
+            const b = rgb & 0xff;
+            const isGray = r === g && g === b && color !== '#ffffff';
             
             // Если клетка белая - удаляем текст и не показываем цифры
             if (color === '#ffffff') {
@@ -752,6 +773,16 @@ export function PhaserGame(props: PhaserGameProps) {
               if (oldText) {
                 oldText.destroy();
                 this.progressTexts.delete(progressKey);
+              }
+              const oldConstructionText = this.constructionPointsTexts.get(progressKey);
+              if (oldConstructionText) {
+                oldConstructionText.destroy();
+                this.constructionPointsTexts.delete(progressKey);
+              }
+              const oldTypeText = this.constructionTypeTexts.get(progressKey);
+              if (oldTypeText) {
+                oldTypeText.destroy();
+                this.constructionTypeTexts.delete(progressKey);
               }
             } else if (!health || health <= 0) {
               // Удаляем старый текст, если жизни закончились (но клетка не белая)
@@ -762,8 +793,84 @@ export function PhaserGame(props: PhaserGameProps) {
               }
             }
             
-            // Показываем цифры только для цветных клеток с жизнями
-            if (color !== '#ffffff' && health && health > 0) {
+            // Для серых клеток показываем строительные очки в верхнем правом углу
+            if (isGray && constructionPoints !== undefined && constructionPoints > 0) {
+              let constructionText = this.constructionPointsTexts.get(progressKey);
+              const pointsString = `${constructionPoints}`;
+              
+              if (!constructionText) {
+                const fontSize = tileSize < 70 ? '12px' : '14px';
+                constructionText = this.add.text(
+                  screenX + tileSize - 4,
+                  screenY + 4,
+                  pointsString,
+                  {
+                    fontSize,
+                    fontFamily: 'Arial',
+                    color: '#ffffff',
+                    stroke: '#000000',
+                    strokeThickness: 2,
+                    align: 'right',
+                  },
+                );
+                constructionText.setOrigin(1, 0); // Верхний правый угол
+                this.constructionPointsTexts.set(progressKey, constructionText);
+              } else {
+                constructionText.setText(pointsString);
+                constructionText.setPosition(screenX + tileSize - 4, screenY + 4);
+              }
+              
+              // Показываем тип строительного материала в верхнем левом углу
+              // constructionType может быть 0, поэтому проверяем !== undefined
+              if (constructionType !== undefined && constructionType !== null) {
+                let typeText = this.constructionTypeTexts.get(progressKey);
+                const typeString = `${constructionType}`;
+                
+                if (!typeText) {
+                  const fontSize = tileSize < 70 ? '12px' : '14px';
+                  typeText = this.add.text(
+                    screenX + 4,
+                    screenY + 4,
+                    typeString,
+                    {
+                      fontSize,
+                      fontFamily: 'Arial',
+                      color: '#ffffff',
+                      stroke: '#000000',
+                      strokeThickness: 2,
+                      align: 'left',
+                    },
+                  );
+                  typeText.setOrigin(0, 0); // Верхний левый угол
+                  this.constructionTypeTexts.set(progressKey, typeText);
+                } else {
+                  typeText.setText(typeString);
+                  typeText.setPosition(screenX + 4, screenY + 4);
+                }
+              } else {
+                // Удаляем текст типа, если его нет
+                const oldTypeText = this.constructionTypeTexts.get(progressKey);
+                if (oldTypeText) {
+                  oldTypeText.destroy();
+                  this.constructionTypeTexts.delete(progressKey);
+                }
+              }
+            } else {
+              // Удаляем текст строительных очков и типа, если клетка не серая
+              const oldConstructionText = this.constructionPointsTexts.get(progressKey);
+              if (oldConstructionText) {
+                oldConstructionText.destroy();
+                this.constructionPointsTexts.delete(progressKey);
+              }
+              const oldTypeText = this.constructionTypeTexts.get(progressKey);
+              if (oldTypeText) {
+                oldTypeText.destroy();
+                this.constructionTypeTexts.delete(progressKey);
+              }
+            }
+            
+            // Показываем цифры только для цветных клеток с жизнями (не серых)
+            if (color !== '#ffffff' && !isGray && health && health > 0) {
               // Создаем или обновляем текстовый объект
               let progressText = this.progressTexts.get(progressKey);
               // Показываем: прогресс игрока / жизни клетки

@@ -244,7 +244,20 @@ function generateCellParams(x: number, y: number): CellParams {
 // r = building + (115 - power)
 // g = food + (115 - power)
 // b = (115 - power)
-function paramsToColor(params: CellParams): CellColor {
+// Если есть constructionPoints, клетка становится серой и темнеет пропорционально очкам
+function paramsToColor(params: CellParams, constructionPoints: number = 0, constructionType?: number): CellColor {
+  // Если есть строительные очки, клетка становится серой
+  if (constructionPoints > 0 && constructionType !== undefined && constructionType !== null && constructionType > 0) {
+    // Максимальное значение строительных очков = constructionType * 255
+    const maxConstructionPoints = constructionType * 255;
+    // Затемнение рассчитывается как отношение constructionPoints к максимальному значению
+    // brightness = 255 - (constructionPoints / maxConstructionPoints) * 255
+    const fillRatio = Math.min(1, Math.max(0, constructionPoints / maxConstructionPoints));
+    const brightness = Math.max(0, 255 - fillRatio * 255);
+    const toHex = (v: number) => Math.round(v).toString(16).padStart(2, '0');
+    return `#${toHex(brightness)}${toHex(brightness)}${toHex(brightness)}`;
+  }
+  
   const brightness = 115 - params.power;
   
   // Вычисляем компоненты RGB
@@ -266,7 +279,7 @@ function paramsToColor(params: CellParams): CellColor {
 // Теперь генерирует параметры клетки и вычисляет цвет из них
 function pseudoRandomColor(x: number, y: number): CellColor {
   const params = generateCellParams(x, y);
-  return paramsToColor(params);
+  return paramsToColor(params, 0);
 }
 
 
@@ -893,30 +906,71 @@ export class GameService {
   }
 
   // Внутренний метод для получения цвета и параметров клетки
-  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams }> {
+  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number }> {
     const key = `${pos.x}:${pos.y}`;
     const cell = await this.cellModel.findOne({ key }).exec();
+    
+    const constructionPoints = cell?.constructionPoints ?? 0;
+    const constructionType = cell?.constructionType;
     
     // Если клетка существует и имеет все параметры, возвращаем их
     if (cell && cell.color && 
         cell.food !== undefined && cell.building !== undefined && 
         cell.experience !== undefined && cell.power !== undefined) {
-      return {
-        color: cell.color,
-        params: {
+      // Если клетка белая (уже собрана), всегда возвращаем ее как белую
+      if (cell.color === '#ffffff') {
+        const params = {
           food: cell.food,
           building: cell.building,
           experience: cell.experience,
           power: cell.power,
-        },
+        };
+        return {
+          color: '#ffffff',
+          params,
+          constructionPoints: 0,
+          constructionType: undefined,
+        };
+      }
+      
+      // Пересчитываем цвет с учетом строительных очков
+      const params = {
+        food: cell.food,
+        building: cell.building,
+        experience: cell.experience,
+        power: cell.power,
+      };
+      const color = paramsToColor(params, constructionPoints, constructionType);
+      return {
+        color,
+        params,
+        constructionPoints,
+        constructionType,
       };
     }
 
-    // Генерируем новые параметры
-    const params = generateCellParams(pos.x, pos.y);
-    const color = paramsToColor(params);
+    // Генерируем новые параметры только если клетка не существует
+    // Если клетка существует, но не имеет всех параметров, проверяем, не белая ли она
+    if (cell && cell.color === '#ffffff') {
+      // Клетка белая, возвращаем ее как есть
+      return {
+        color: '#ffffff',
+        params: {
+          food: cell.food ?? 0,
+          building: cell.building ?? 0,
+          experience: cell.experience ?? 0,
+          power: cell.power ?? 1,
+        },
+        constructionPoints: 0,
+        constructionType: undefined,
+      };
+    }
 
-    // Сохраняем в БД
+    // Генерируем новые параметры только для новых клеток
+    const params = generateCellParams(pos.x, pos.y);
+    const color = paramsToColor(params, constructionPoints, constructionType);
+
+    // Сохраняем в БД только если клетка не существует ($setOnInsert не обновит существующую)
     await this.cellModel.findOneAndUpdate(
       { key },
       {
@@ -928,13 +982,14 @@ export class GameService {
           building: params.building,
           experience: params.experience,
           power: params.power,
+          constructionPoints: 0,
           playerProgress: {},
         },
       },
       { upsert: true },
     ).exec();
 
-    return { color, params };
+    return { color, params, constructionPoints, constructionType: undefined };
   }
 
   // Получить только цвет (для обратной совместимости)
@@ -949,8 +1004,8 @@ export class GameService {
   }
 
   // Публичный метод для получения параметров клетки (для gateway)
-  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams }> {
-    return this.getCellColorInternal(pos);
+  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number }> {
+    return await this.getCellColorInternal(pos);
   }
 
   async collectCell(clientId: string, pos: CellPosition): Promise<PlayerState | undefined> {
@@ -976,16 +1031,20 @@ export class GameService {
     position: CellPosition;
     color: CellColor;
     params?: CellParams;
+    constructionPoints?: number;
+    constructionType?: number;
   }[]> {
-    const result: { position: CellPosition; color: CellColor; params?: CellParams }[] = [];
+    const result: { position: CellPosition; color: CellColor; params?: CellParams; constructionPoints?: number; constructionType?: number }[] = [];
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const pos = { x: center.x + dx, y: center.y + dy };
-        const { color, params } = await this.getCellColorInternal(pos);
+        const { color, params, constructionPoints, constructionType } = await this.getCellColorInternal(pos);
         result.push({
           position: pos,
           color,
           params,
+          constructionPoints,
+          constructionType,
         });
       }
     }
@@ -1114,7 +1173,7 @@ export class GameService {
         if (cellColor === '#ffffff') {
           // Генерируем новые параметры и цвет
           const newParams = generateCellParams(pos.x, pos.y);
-          const newColor = paramsToColor(newParams);
+          const newColor = paramsToColor(newParams, 0);
           
           // Обновляем клетку в MongoDB
           await this.cellModel.findOneAndUpdate(
@@ -1334,10 +1393,16 @@ export class GameService {
         }
       }
       
-      // Клетка становится белой
+      // Клетка становится белой и остается белой навсегда
       cell.color = '#ffffff';
       cell.health = undefined;
       cell.playerProgress = {};
+      // Устанавливаем параметры белой клетки (нельзя собирать)
+      cell.food = 0;
+      cell.building = 0;
+      cell.experience = 0;
+      cell.power = 1;
+      cell.constructionPoints = 0;
     }
     
     // Сохраняем изменения клетки
@@ -1500,6 +1565,140 @@ export class GameService {
         }
       }
     }
+  }
+
+  // Сброс инвентаря на клетку, где стоит игрок
+  async dropInventoryOnCell(
+    clientId: string,
+    color: CellColor,
+    count: number,
+  ): Promise<{ success: boolean; message?: string; constructionPoints?: number; constructionType?: number }> {
+    const player = await this.getOrCreatePlayer(clientId);
+    if (!player) {
+      return { success: false, message: 'Игрок не найден' };
+    }
+
+    // Используем позицию игрока
+    const position = player.position;
+    const key = `${position.x}:${position.y}`;
+
+    // Проверяем, что клетка белая или серая (строительный материал)
+    const cell = await this.cellModel.findOne({ key }).exec();
+    const cellColor = cell?.color ?? '#ffffff';
+    const currentConstructionPoints = cell?.constructionPoints ?? 0;
+    const currentConstructionType = cell?.constructionType;
+    const isWhite = cellColor === '#ffffff';
+    const isConstructionMaterial = currentConstructionPoints > 0;
+    
+    if (!isWhite && !isConstructionMaterial) {
+      return { success: false, message: 'Можно сбрасывать только на белые клетки или клетки со строительным материалом' };
+    }
+
+    // Проверяем, что у игрока есть этот предмет в инвентаре
+    const currentCount = player.inventory[color] ?? 0;
+    if (currentCount < count) {
+      return { success: false, message: 'Недостаточно предметов в инвентаре' };
+    }
+
+    // Вычисляем строительные очки на основе параметра building из сброшенного предмета
+    // Нужно найти параметры клетки по цвету из инвентаря
+    // Ищем клетку с таким цветом в БД для получения параметров
+    let buildingPointsToAdd = 0;
+    
+    // Ищем любую клетку с таким цветом в БД для получения параметров
+    const sampleCell = await this.cellModel.findOne({ 
+      color,
+      building: { $exists: true, $ne: undefined }
+    }).exec();
+    
+    let itemBuilding = 0;
+    let itemExperience = 0;
+    let itemFood = 0;
+    
+    if (sampleCell && sampleCell.building !== undefined) {
+      // Используем параметры из найденной клетки
+      itemBuilding = sampleCell.building;
+      itemExperience = sampleCell.experience ?? 0;
+      itemFood = sampleCell.food ?? 0;
+    } else {
+      // Fallback: используем компоненты цвета
+      const { r, g, b } = this.getRGBComponents(color);
+      itemBuilding = r;
+      itemExperience = b;
+      itemFood = g;
+    }
+
+    // Вычисляем тип строительного материала: ceil(опыт / 10)
+    const itemConstructionType = Math.ceil(itemExperience / 10);
+
+    // Проверяем тип клетки, если это строительный материал
+    if (isConstructionMaterial && currentConstructionType !== undefined) {
+      if (itemConstructionType !== currentConstructionType) {
+        return { success: false, message: `Можно сбрасывать только в клетку типа ${currentConstructionType}. Тип предмета: ${itemConstructionType}` };
+      }
+    }
+
+    // Формула: кол-во которое нужно прибавить = кол-во строй очков - кол-во опыта клетки
+    const pointsToAdd = Math.max(0, itemBuilding - itemExperience) * count;
+
+    // Тип строительного материала устанавливается при первом сбросе или должен совпадать
+    const newConstructionType = isWhite ? itemConstructionType : currentConstructionType;
+    
+    // Проверяем, что тип определен
+    if (newConstructionType === undefined || newConstructionType === null) {
+      return { success: false, message: 'Тип строительного материала не определен' };
+    }
+    
+    // Максимальное значение строительных очков = constructionType * 255
+    const maxConstructionPoints = newConstructionType * 255;
+    
+    // Строительные очки = сумма (building - experience) параметров сброшенных предметов
+    // Ограничиваем максимальным значением для данного типа
+    const newConstructionPoints = Math.min(maxConstructionPoints, currentConstructionPoints + pointsToAdd);
+
+    // Удаляем предметы из инвентаря
+    player.inventory[color] = currentCount - count;
+    if (player.inventory[color] === 0) {
+      delete player.inventory[color];
+    }
+
+    // Сохраняем игрока
+    await this.savePlayer(player);
+
+    // Обновляем клетку: устанавливаем параметры строительного материала
+    // food=0, building=constructionPoints, experience=0, power=16 (для серых клеток)
+    // health = building * 10
+    const newParams: CellParams = {
+      food: 0,
+      building: newConstructionPoints,
+      experience: 0,
+      power: 16, // Серые клетки имеют силу 16
+    };
+    const newColor = paramsToColor(newParams, newConstructionPoints, newConstructionType);
+    const newHealth = newConstructionPoints * 10; // Здоровье = building * 10
+
+    await this.cellModel.findOneAndUpdate(
+      { key },
+      {
+        $set: {
+          color: newColor,
+          food: 0,
+          building: newConstructionPoints,
+          experience: 0,
+          power: 16,
+          health: newHealth,
+          constructionPoints: newConstructionPoints,
+          constructionType: newConstructionType,
+        },
+      },
+      { upsert: true },
+    ).exec();
+
+    return {
+      success: true,
+      constructionPoints: newConstructionPoints,
+      constructionType: newConstructionType,
+    };
   }
 }
 
