@@ -292,11 +292,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const playerId = this.getPlayerId(client);
     const player = await this.gameService.collectCell(playerId, body.position);
     if (!player) return;
-    const cellColor = await this.gameService.getCellColor(body.position);
+    const { color: cellColor, params } = await this.gameService.getCellColorInternalPublic(body.position);
 
     this.server.emit('cell:updated', {
       position: body.position,
       color: cellColor,
+      params,
     });
 
     await this.broadcastPlayers();
@@ -318,6 +319,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       required: result.required,
       color: result.color,
       health: result.health,
+      tapAmount: result.tapAmount ?? 0, // Количество натапанного за раз
+      insufficientInventory: result.insufficientInventory ?? false, // Флаг нехватки места
     });
 
     // Отправляем обновление жизней клетки всем клиентам
@@ -328,9 +331,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Если цвет собран - обновляем клетку и рассылаем обновления
     if (result.collected) {
+      const { color, params } = await this.gameService.getCellColorInternalPublic(body.position);
       this.server.emit('cell:updated', {
         position: body.position,
         color: '#ffffff',
+        params: params ? { ...params, food: 0, building: 0, experience: 0, power: 1 } : undefined,
       });
       
       // Отправляем анимацию сбора ресурсов победителю
@@ -391,9 +396,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (result.exploded) {
       // Отправляем обновления для всех затронутых клеток
       for (const cell of result.affectedCells) {
+        const { params } = await this.gameService.getCellColorInternalPublic(cell.position);
         this.server.emit('cell:updated', {
           position: cell.position,
           color: cell.color,
+          params,
         });
       }
     }

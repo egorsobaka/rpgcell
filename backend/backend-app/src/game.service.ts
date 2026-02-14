@@ -136,9 +136,57 @@ function weightedRandomColor(seed: number): CellColor {
   return BASE_COLORS[BASE_COLORS.length - 1];
 }
 
-// Генератор диагональных линий с ограничением длины и случайной шириной
-// Теперь учитывает силу клетки - чем сильнее клетка, тем реже она появляется
-function pseudoRandomColor(x: number, y: number): CellColor {
+// Интерфейс для параметров клетки
+interface CellParams {
+  food: number; // Кол-во еды (0-255, шаг 8)
+  building: number; // Кол-во строительных единиц (0-255, шаг 8)
+  experience: number; // Кол-во опыта (0-255, шаг 8)
+  power: number; // Сила клетки (1-256, влияет на яркость)
+}
+
+// Возможные значения силы клетки (с шагом 8, от 8 до 248)
+const POWER_VALUES: number[] = [];
+for (let i = 1; i <= 31; i++) {
+  POWER_VALUES.push(i * 8);
+}
+
+// Вычисление весов для значений силы (обратно пропорционально силе)
+// Меньшие значения имеют больший вес
+function calculatePowerWeights(): number[] {
+  const weights: number[] = [];
+  for (const power of POWER_VALUES) {
+    // Вес обратно пропорционален силе в степени 1.5
+    // Это означает, что сильные клетки появляются реже
+    const weight = 1 / Math.pow(power, 1.5);
+    weights.push(weight);
+  }
+  return weights;
+}
+
+// Предвычисленные веса для всех значений силы
+const POWER_WEIGHTS = calculatePowerWeights();
+const TOTAL_POWER_WEIGHT = POWER_WEIGHTS.reduce((sum, w) => sum + w, 0);
+
+// Взвешенная выборка силы клетки на основе весов
+function weightedRandomPower(seed: number): number {
+  // Преобразуем seed в значение от 0 до 1
+  const hash = Math.abs(seed);
+  const normalized = (hash % 1000000) / 1000000;
+  const randomValue = normalized * TOTAL_POWER_WEIGHT;
+  
+  let cumulativeWeight = 0;
+  for (let i = 0; i < POWER_VALUES.length; i++) {
+    cumulativeWeight += POWER_WEIGHTS[i];
+    if (randomValue <= cumulativeWeight) {
+      return POWER_VALUES[i];
+    }
+  }
+  // Fallback на минимальное значение (на случай ошибок округления)
+  return POWER_VALUES[0];
+}
+
+// Генерация параметров клетки с шагом 8
+function generateCellParams(x: number, y: number): CellParams {
   // Диагональ вида x + y = const (идет сверху-слева вниз-вправо)
   const diagonalSum = x + y;
   
@@ -154,12 +202,71 @@ function pseudoRandomColor(x: number, y: number): CellColor {
   const perpendicular = x - y;
   const stripIndex = Math.floor(perpendicular / lineWidth);
   
-  // Генерируем seed для взвешенной выборки цвета
-  // Цвет меняется и по сегментам, и по полосам
-  const colorSeed = (segmentIndex * 73856093) ^ (stripIndex * 19349663);
+  // Генерируем seed для параметров
+  const paramSeed = (segmentIndex * 73856093) ^ (stripIndex * 19349663);
   
-  // Используем взвешенную выборку, чтобы сильные клетки появлялись реже
-  return weightedRandomColor(colorSeed);
+  // Генерируем параметры в заданных интервалах
+  // food: от 30 до 230
+  // building: от 30 до 230
+  // experience: от 20 до 230 (но зависит от силы - чем меньше сила, тем меньше вероятность большого опыта)
+  // Используем разные части seed для разных параметров
+  const foodSeed = Math.abs(paramSeed * 73856093) % 201; // 0-200 -> 30-230
+  const buildingSeed = Math.abs(paramSeed * 19349663) % 201; // 0-200 -> 30-230
+  const powerSeed = (paramSeed * 48273629) ^ (paramSeed * 73856093); // Комбинируем для лучшей случайности
+  
+  const food = 30 + foodSeed;
+  const building = 30 + buildingSeed;
+  
+  // Сила клетки от 8 до 248 с шагом 8, взвешенная выборка (меньшие значения более вероятны)
+  const power = weightedRandomPower(powerSeed);
+  
+  // Генерируем опыт с учетом силы: чем меньше сила, тем меньше вероятность большого опыта
+  // Максимальный опыт линейно зависит от силы: при power=8 -> maxExperience=20, при power=248 -> maxExperience=230
+  const powerFactor = (power - 8) / (248 - 8); // Нормализуем power к [0, 1]
+  const maxExperience = Math.round(20 + powerFactor * (230 - 20)); // 20 до 230
+  const experienceRange = maxExperience - 20 + 1; // Количество возможных значений опыта
+  
+  // Генерируем опыт с взвешенной вероятностью (меньшие значения более вероятны при маленькой силе)
+  const experienceSeed = Math.abs(paramSeed * 83492791) % 1000; // 0-999 для более точной выборки
+  const randomValue = experienceSeed / 1000; // 0 до 1
+  
+  // Применяем степенную функцию: чем меньше сила, тем больше "сжатие" к меньшим значениям
+  // При powerFactor=0 (сила=8): степень=3, сильное сжатие к малым значениям
+  // При powerFactor=1 (сила=248): степень=1, равномерное распределение
+  const exponent = 1 + (1 - powerFactor) * 2; // Степень от 1 до 3
+  const adjustedValue = Math.pow(randomValue, exponent);
+  const experience = 20 + Math.floor(adjustedValue * experienceRange);
+  
+  return { food, building, experience, power };
+}
+
+// Вычисление цвета из параметров клетки
+// r = building + (115 - power)
+// g = food + (115 - power)
+// b = (115 - power)
+function paramsToColor(params: CellParams): CellColor {
+  const brightness = 115 - params.power;
+  
+  // Вычисляем компоненты RGB
+  let r = params.building + brightness;
+  let g = params.food + brightness;
+  let b = brightness; // b = (115 - power), без experience
+  
+  // Ограничиваем значения до 255
+  r = Math.min(255, Math.max(0, r));
+  g = Math.min(255, Math.max(0, g));
+  b = Math.min(255, Math.max(0, b));
+  
+  // Конвертируем в HEX
+  const toHex = (v: number) => Math.round(v).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// Генератор диагональных линий с ограничением длины и случайной шириной
+// Теперь генерирует параметры клетки и вычисляет цвет из них
+function pseudoRandomColor(x: number, y: number): CellColor {
+  const params = generateCellParams(x, y);
+  return paramsToColor(params);
 }
 
 
@@ -382,7 +489,13 @@ export class GameService {
     return this.getRGBComponents(hexColor).g;
   }
 
-  // Вычисление веса одного элемента инвентаря
+  // Вычисление веса одного элемента инвентаря из параметров
+  // Вес = (количество * food / 16) + (количество * experience / 32)
+  private getItemWeightFromParams(params: CellParams, count: number): number {
+    return (count * params.food / 16) + (count * params.experience / 32);
+  }
+
+  // Вычисление веса одного элемента инвентаря из цвета (для обратной совместимости)
   // Вес = (количество * зеленый компонент / 16) + (количество * синий компонент / 32)
   private getItemWeight(color: string, count: number): number {
     const { g, b } = this.getRGBComponents(color);
@@ -390,7 +503,32 @@ export class GameService {
   }
 
   // Вычисление общего веса инвентаря
-  private getInventoryWeight(inventory: Record<string, number>): number {
+  // Пытается использовать параметры клеток из БД, если доступны
+  private async getInventoryWeight(inventory: Record<string, number>): Promise<number> {
+    let totalWeight = 0;
+    for (const [color, count] of Object.entries(inventory)) {
+      if (count > 0) {
+        // Пытаемся найти клетку с таким цветом в БД
+        const cell = await this.cellModel.findOne({ color }).exec();
+        if (cell && cell.food !== undefined && cell.experience !== undefined) {
+          const params: CellParams = {
+            food: cell.food,
+            building: cell.building ?? 0,
+            experience: cell.experience,
+            power: cell.power ?? 1,
+          };
+          totalWeight += this.getItemWeightFromParams(params, count);
+        } else {
+          // Используем старую логику из цвета
+          totalWeight += this.getItemWeight(color, count);
+        }
+      }
+    }
+    return Math.round(totalWeight);
+  }
+
+  // Синхронная версия для обратной совместимости (используется в старых местах)
+  private getInventoryWeightSync(inventory: Record<string, number>): number {
     let totalWeight = 0;
     for (const [color, count] of Object.entries(inventory)) {
       if (count > 0) {
@@ -406,9 +544,64 @@ export class GameService {
     return Math.round((playerWeight / 2) + (playerWeight / 2 * playerStamina / 10));
   }
 
-  // Вычисление силы клетки: значение красного цвета (от 1 до 256)
+  // Вычисление количества добытых единиц от 1 до 10 на основе удачи и уровня
+  // Вероятность выпадения N = (удача / N * уровень игрока)
+  private calculateCollectedAmount(luck: number, level: number): number {
+    // Вычисляем вероятности для каждого значения от 1 до 10
+    const probabilities: number[] = [];
+    let totalWeight = 0;
+    
+    for (let amount = 1; amount <= 10; amount++) {
+      // Вероятность выпадения amount = (удача / amount * уровень)
+      const probability = (luck / amount) * level;
+      probabilities.push(probability);
+      totalWeight += probability;
+    }
+    
+    // Если сумма вероятностей равна 0 или очень мала, возвращаем минимальное значение
+    if (totalWeight <= 0) {
+      return 1;
+    }
+    
+    // Генерируем случайное значение от 0 до totalWeight
+    const randomValue = Math.random() * totalWeight;
+    
+    // Выбираем значение на основе накопленных вероятностей
+    let cumulativeWeight = 0;
+    for (let amount = 1; amount <= 10; amount++) {
+      cumulativeWeight += probabilities[amount - 1];
+      if (randomValue <= cumulativeWeight) {
+        return amount;
+      }
+    }
+    
+    // Fallback на минимальное значение
+    return 1;
+  }
+
+  // Вычисление силы клетки из параметров клетки
+  // Если параметры есть в БД, используем их, иначе вычисляем из цвета (для обратной совместимости)
+  private async getCellPowerFromDB(pos: CellPosition): Promise<number> {
+    const key = `${pos.x}:${pos.y}`;
+    const cell = await this.cellModel.findOne({ key }).exec();
+    if (cell && cell.power !== undefined && cell.power !== null) {
+      return cell.power;
+    }
+    // Если параметров нет, генерируем их
+    const params = generateCellParams(pos.x, pos.y);
+    return params.power;
+  }
+
+  // Вычисление силы клетки: используем параметр power (от 1 до 256)
   // Это минимальная сила сбора, необходимая для тапа
-  private getCellPower(hexColor: string): number {
+  private async getCellPower(pos: CellPosition): Promise<number> {
+    return await this.getCellPowerFromDB(pos);
+  }
+
+  // Синхронная версия для обратной совместимости (используется в старых местах)
+  private getCellPowerSync(hexColor: string): number {
+    // Для обратной совместимости вычисляем из цвета, если параметров нет
+    // Но это не должно использоваться в новой логике
     const { r } = this.getRGBComponents(hexColor);
     return Math.max(1, r + 1); // От 1 до 256 (0-255 + 1)
   }
@@ -433,20 +626,42 @@ export class GameService {
     let satietyRestored = 0;
     let experienceGained = 0;
 
+    // Пытаемся найти клетку с таким цветом в БД, чтобы получить параметры
+    // Если не найдем, используем старую логику (из цвета)
+    let cellParams: CellParams | null = null;
+    const cell = await this.cellModel.findOne({ color }).exec();
+    if (cell && cell.food !== undefined && cell.building !== undefined && 
+        cell.experience !== undefined && cell.power !== undefined) {
+      cellParams = {
+        food: cell.food,
+        building: cell.building,
+        experience: cell.experience,
+        power: cell.power,
+      };
+    }
+
     if (useType === 'satiety') {
       // Проверяем, не полная ли уже сытость
       if (player.satiety >= player.weight) {
         return { success: false, satietyRestored: 0, newSatiety: player.satiety, experienceGained: 0, newExperience: player.experience };
       }
-      // Вычисляем восстановление сытости на основе зеленого компонента
-      const greenComponent = this.getGreenComponent(color);
-      satietyRestored = greenComponent;
+      // Вычисляем восстановление сытости на основе food параметра или зеленого компонента
+      if (cellParams) {
+        satietyRestored = cellParams.food;
+      } else {
+        const greenComponent = this.getGreenComponent(color);
+        satietyRestored = greenComponent;
+      }
       // Восстанавливаем сытость (максимум weight)
       player.satiety = Math.min(player.weight, player.satiety + satietyRestored);
     } else if (useType === 'experience') {
-      // Вычисляем опыт на основе синего компонента
-      const { b } = this.getRGBComponents(color);
-      experienceGained = b;
+      // Вычисляем опыт на основе experience параметра или синего компонента
+      if (cellParams) {
+        experienceGained = cellParams.experience;
+      } else {
+        const { b } = this.getRGBComponents(color);
+        experienceGained = b;
+      }
       // Добавляем опыт
       player.experience += experienceGained;
       // Проверяем достижение нового уровня
@@ -580,8 +795,8 @@ export class GameService {
   }
 
   // Получить силу клетки (публичный метод)
-  getCellPowerPublic(color: CellColor): number {
-    return this.getCellPower(color);
+  async getCellPowerPublic(pos: CellPosition): Promise<number> {
+    return await this.getCellPower(pos);
   }
 
   async movePlayer(clientId: string, position: CellPosition): Promise<PlayerState | undefined> {
@@ -644,9 +859,10 @@ export class GameService {
   private async getOrInitCellHealth(pos: CellPosition): Promise<number> {
     const key = `${pos.x}:${pos.y}`;
     
-    // Получаем или создаем клетку с использованием upsert для избежания race condition
-    const color = await this.getCellColorInternal(pos);
-    const health = this.getCellPower(color);
+    // Получаем параметры клетки
+    const { color, params } = await this.getCellColorInternal(pos);
+    // Здоровье = сила * опыт
+    const health = params.power * params.experience;
     
     let cell = await this.cellModel.findOneAndUpdate(
       { key },
@@ -655,6 +871,10 @@ export class GameService {
           key,
           position: pos,
           color,
+          food: params.food,
+          building: params.building,
+          experience: params.experience,
+          power: params.power,
           health,
           playerProgress: {},
         },
@@ -672,29 +892,64 @@ export class GameService {
     return cell?.health ?? health;
   }
 
-  // Внутренний метод для получения цвета без инициализации жизней
-  private async getCellColorInternal(pos: CellPosition): Promise<CellColor> {
+  // Внутренний метод для получения цвета и параметров клетки
+  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams }> {
     const key = `${pos.x}:${pos.y}`;
     const cell = await this.cellModel.findOne({ key }).exec();
-    if (cell && cell.color) {
-      return cell.color;
+    
+    // Если клетка существует и имеет все параметры, возвращаем их
+    if (cell && cell.color && 
+        cell.food !== undefined && cell.building !== undefined && 
+        cell.experience !== undefined && cell.power !== undefined) {
+      return {
+        color: cell.color,
+        params: {
+          food: cell.food,
+          building: cell.building,
+          experience: cell.experience,
+          power: cell.power,
+        },
+      };
     }
 
-    // Источники случайных цветов: если клетка находится рядом с источником — используем его цвет
-    for (const source of this.colorSources) {
-      const dx = pos.x - source.position.x;
-      const dy = pos.y - source.position.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      if (distance <= 2) {
-        return source.color;
-      }
-    }
+    // Генерируем новые параметры
+    const params = generateCellParams(pos.x, pos.y);
+    const color = paramsToColor(params);
 
-    return pseudoRandomColor(pos.x, pos.y);
+    // Сохраняем в БД
+    await this.cellModel.findOneAndUpdate(
+      { key },
+      {
+        $setOnInsert: {
+          key,
+          position: pos,
+          color,
+          food: params.food,
+          building: params.building,
+          experience: params.experience,
+          power: params.power,
+          playerProgress: {},
+        },
+      },
+      { upsert: true },
+    ).exec();
+
+    return { color, params };
+  }
+
+  // Получить только цвет (для обратной совместимости)
+  private async getCellColorOnly(pos: CellPosition): Promise<CellColor> {
+    const result = await this.getCellColorInternal(pos);
+    return result.color;
   }
 
   // Публичный метод для получения цвета клетки
   async getCellColor(pos: CellPosition): Promise<CellColor> {
+    return this.getCellColorOnly(pos);
+  }
+
+  // Публичный метод для получения параметров клетки (для gateway)
+  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams }> {
     return this.getCellColorInternal(pos);
   }
 
@@ -720,15 +975,17 @@ export class GameService {
   async getViewportColors(center: CellPosition, radius: number): Promise<{
     position: CellPosition;
     color: CellColor;
+    params?: CellParams;
   }[]> {
-    const result: { position: CellPosition; color: CellColor }[] = [];
+    const result: { position: CellPosition; color: CellColor; params?: CellParams }[] = [];
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const pos = { x: center.x + dx, y: center.y + dy };
-        const color = await this.getCellColorInternal(pos);
+        const { color, params } = await this.getCellColorInternal(pos);
         result.push({
           position: pos,
           color,
+          params,
         });
       }
     }
@@ -800,7 +1057,7 @@ export class GameService {
     affectedCells: { position: CellPosition; color: CellColor }[];
   }> {
     const key = `${pos.x}:${pos.y}`;
-    const currentColor = await this.getCellColorInternal(pos);
+    const { color: currentColor } = await this.getCellColorInternal(pos);
 
     // Проверяем, что клетка белая
     if (currentColor !== '#ffffff') {
@@ -851,15 +1108,13 @@ export class GameService {
 
         const pos = { x: center.x + dx, y: center.y + dy };
         const key = `${pos.x}:${pos.y}`;
-        const cellColor = await this.getCellColorInternal(pos);
+        const { color: cellColor } = await this.getCellColorInternal(pos);
 
-        // Если клетка белая - превращаем в случайный цвет
+        // Если клетка белая - превращаем в случайный цвет с новыми параметрами
         if (cellColor === '#ffffff') {
-          // Генерируем случайный цвет из палитры
-          const randomIndex = Math.floor(
-            Math.random() * BASE_COLORS.length,
-          );
-          const newColor = BASE_COLORS[randomIndex];
+          // Генерируем новые параметры и цвет
+          const newParams = generateCellParams(pos.x, pos.y);
+          const newColor = paramsToColor(newParams);
           
           // Обновляем клетку в MongoDB
           await this.cellModel.findOneAndUpdate(
@@ -867,6 +1122,10 @@ export class GameService {
             {
               $set: {
                 color: newColor,
+                food: newParams.food,
+                building: newParams.building,
+                experience: newParams.experience,
+                power: newParams.power,
                 'playerProgress.whiteTaps': 0, // Сбрасываем счетчик
               },
             },
@@ -893,20 +1152,22 @@ export class GameService {
     health: number;
     winnerId?: string;
     collectedAmount?: number;
+    tapAmount?: number; // Количество натапанного за раз
+    insufficientInventory?: boolean; // Флаг нехватки места в инвентаре
   }> {
     const player = await this.getOrCreatePlayer(clientId);
     if (!player) {
-      return { collected: false, progress: 0, required: 0, color: '#000000', health: 0 };
+      return { collected: false, progress: 0, required: 0, color: '#000000', health: 0, tapAmount: 0 };
     }
 
-    const cellColor = await this.getCellColorInternal(pos);
+    const { color: cellColor, params } = await this.getCellColorInternal(pos);
     if (cellColor === '#ffffff') {
-      return { collected: false, progress: 0, required: 0, color: '#ffffff', health: 0 };
+      return { collected: false, progress: 0, required: 0, color: '#ffffff', health: 0, tapAmount: 0 };
     }
 
     // Проверяем, достаточно ли силы сбора для тапа
     // Клетку можно тапать, если её сила меньше чем collectionPower * (power/2 + stamina/2 - defense)
-    const cellPower = this.getCellPower(cellColor);
+    const cellPower = params.power;
     const multiplier = (player.power / 2) + (player.stamina / 2) - (player.defense ?? 0);
     // Защита от отрицательного или слишком маленького множителя
     const safeMultiplier = Math.max(0.1, multiplier);
@@ -922,13 +1183,16 @@ export class GameService {
         required: health,
         color: cellColor,
         health: health,
+        tapAmount: 0, // Не тапали, так как нет места в инвентаре
+        insufficientInventory: true, // Флаг, что проблема в нехватке места
       };
     }
 
     // Проверяем, есть ли место в инвентаре для потенциального сбора
     // Проверяем минимальный вес (1 единица), чтобы убедиться, что хотя бы 1 единица поместится
-    const minItemWeight = this.getItemWeight(cellColor, 1);
-    const currentWeight = this.getInventoryWeight(player.inventory);
+    const minItemWeight = this.getItemWeightFromParams(params, 1);
+    // Используем асинхронный метод, который учитывает параметры из БД
+    const currentWeight = await this.getInventoryWeight(player.inventory);
     const maxWeight = this.getMaxInventoryWeight(player.weight, player.stamina);
     
     // Если даже минимальный вес (1 единица) не поместится, запрещаем тап
@@ -944,6 +1208,8 @@ export class GameService {
         required: health,
         color: cellColor,
         health: health,
+        tapAmount: 0, // Не тапали, так как нет места в инвентаре
+        insufficientInventory: true, // Флаг, что проблема в нехватке места
       };
     }
 
@@ -958,6 +1224,10 @@ export class GameService {
           key,
           position: pos,
           color: cellColor,
+          food: params.food,
+          building: params.building,
+          experience: params.experience,
+          power: params.power,
           health,
           playerProgress: {},
         },
@@ -972,11 +1242,12 @@ export class GameService {
     }
     
     // Увеличиваем прогресс игрока на силу сбора
-    const currentProgress = (cell.playerProgress[clientId] ?? 0) + player.collectionPower;
+    const tapAmount = player.collectionPower; // Количество натапанного за раз
+    const currentProgress = (cell.playerProgress[clientId] ?? 0) + tapAmount;
     cell.playerProgress[clientId] = currentProgress;
     
     // Уменьшаем жизни клетки на силу сбора
-    cell.health -= player.collectionPower;
+    cell.health -= tapAmount;
     
     let collectedAmount: number | undefined;
     let winnerId: string | undefined;
@@ -1006,19 +1277,17 @@ export class GameService {
       if (winnerId) {
         const winner = await this.getOrCreatePlayer(winnerId);
         if (winner) {
-          // Вычисляем количество собранных единиц по формуле: collectionPower * ((power + stamina) / (power + stamina + defense))
-          const numerator = winner.power + winner.stamina;
-          const denominator = numerator + (winner.defense ?? 0);
-          // Защита от деления на ноль
-          const multiplier = denominator > 0 ? numerator / denominator : 1;
-          collectedAmount = Math.max(1, Math.ceil(winner.collectionPower * multiplier));
+          // Вычисляем количество собранных единиц от 1 до 10 на основе удачи и уровня
+          // Вероятность выпадения N = (удача / N * уровень игрока)
+          collectedAmount = this.calculateCollectedAmount(winner.luck ?? 0, winner.level);
           
           // Проверяем ограничение по весу инвентаря
-          const currentWeight = this.getInventoryWeight(winner.inventory);
+          // Используем асинхронный метод, который учитывает параметры из БД
+          const currentWeight = await this.getInventoryWeight(winner.inventory);
           const maxWeight = this.getMaxInventoryWeight(winner.weight, winner.stamina);
           
           // Вычисляем вес добавляемых предметов
-          const itemWeight = this.getItemWeight(cellColor, collectedAmount);
+          const itemWeight = this.getItemWeightFromParams(params, collectedAmount);
           
           // Если добавление предметов превысит максимальный вес, не добавляем
           if (currentWeight + itemWeight > maxWeight) {
@@ -1028,20 +1297,22 @@ export class GameService {
           } else {
             const hasColor = winner.inventory[cellColor] !== undefined && winner.inventory[cellColor] > 0;
             
-            let newCount: number;
-            if (hasColor) {
-              newCount = (winner.inventory[cellColor] ?? 0) + collectedAmount;
-            } else {
-              newCount = collectedAmount;
-              if (!winner.unlockedColors.includes(cellColor)) {
-                winner.unlockedColors.push(cellColor);
+            if (collectedAmount !== undefined && collectedAmount > 0) {
+              let newCount: number;
+              if (hasColor) {
+                newCount = (winner.inventory[cellColor] ?? 0) + collectedAmount;
+              } else {
+                newCount = collectedAmount;
+                if (!winner.unlockedColors.includes(cellColor)) {
+                  winner.unlockedColors.push(cellColor);
+                }
               }
+              
+              // Просто устанавливаем новое количество без проверки на превышение номера цвета
+              winner.inventory[cellColor] = newCount;
+              
+              winner.totalCollected += collectedAmount;
             }
-            
-            // Просто устанавливаем новое количество без проверки на превышение номера цвета
-            winner.inventory[cellColor] = newCount;
-            
-            winner.totalCollected += collectedAmount;
             
             // Логика открытия новых цветов
             const currentColors = winner.unlockedColors.length;
@@ -1080,6 +1351,7 @@ export class GameService {
       health: cell.health ?? 0,
       winnerId,
       collectedAmount,
+      tapAmount, // Количество натапанного за раз
     };
   }
 
@@ -1095,7 +1367,7 @@ export class GameService {
       return { progress: 0, required: 0, color: '#000000', health: 0 };
     }
 
-    const cellColor = await this.getCellColorInternal(pos);
+    const { color: cellColor } = await this.getCellColorInternal(pos);
     if (cellColor === '#ffffff') {
       return { progress: 0, required: 0, color: '#ffffff', health: 0 };
     }

@@ -38,6 +38,7 @@ export interface PhaserGameProps {
   setInsufficientPowerCallback?: (callback: (position: CellPosition, cellPower: number) => void) => void;
   insufficientInventoryMessage?: { position: CellPosition; timestamp: number } | null;
   setInsufficientInventoryCallback?: (callback: (position: CellPosition) => void) => void;
+  setTapAmountCallback?: (callback: (position: CellPosition, amount: number) => void) => void;
 }
 
 const TILE_SIZE = 96; // Базовый размер, будет подгоняться под экран
@@ -172,6 +173,11 @@ export function PhaserGame(props: PhaserGameProps) {
       private insufficientPowerAnimations = new Map<string, { text: Phaser.GameObjects.Text; startTime: number; cellPower: number }>();
       // Анимации нехватки места в инвентаре: ключ "x:y", значение - объект с информацией об анимации
       private insufficientInventoryAnimations = new Map<string, { text: Phaser.GameObjects.Text; startTime: number }>();
+      // Анимации тапа: ключ "x:y", значение - объект с информацией об анимации
+      private tapAmountAnimations = new Map<string, { text: Phaser.GameObjects.Text; startTime: number; amount: number; initialDx: number }>();
+      // Циклический массив смещений по dx
+      private readonly tapDxValues = [-3, -6, -9, -12, -9, -6, -3, 0, 3, 6, 9, 12, 9, 6, 3, 0];
+      private tapDxIndex = 0; // Текущий индекс в массиве смещений
 
       constructor() {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -312,6 +318,57 @@ export function PhaserGame(props: PhaserGameProps) {
         });
       }
 
+      showTapAmount(position: CellPosition, amount: number) {
+        const key = `${position.x}:${position.y}`;
+        
+        // Удаляем старую анимацию, если есть
+        const existing = this.tapAmountAnimations.get(key);
+        if (existing) {
+          existing.text.destroy();
+        }
+        
+        const viewRadius = getViewRadius();
+        const tileSize = getTileSize();
+        const canvasCenterX = tileSize * (viewRadius.x + 0.5);
+        const canvasCenterY = tileSize * (viewRadius.y + 0.5);
+        
+        // Вычисляем позицию на экране
+        const dx = position.x - this.renderCenterX;
+        const dy = position.y - this.renderCenterY;
+        const screenX = canvasCenterX + dx * tileSize;
+        const screenY = canvasCenterY + dy * tileSize;
+        
+        // Получаем циклическое смещение по dx из массива
+        const tapDx = this.tapDxValues[this.tapDxIndex];
+        // Переходим к следующему индексу (циклически)
+        this.tapDxIndex = (this.tapDxIndex + 1) % this.tapDxValues.length;
+        
+        // Создаем текст с анимацией
+        const fontSize = tileSize < 70 ? '18px' : '24px';
+        const text = this.add.text(
+          screenX + tapDx,
+          screenY - tileSize * 0.3,
+          `-${amount}`,
+          {
+            fontSize,
+            fontFamily: 'Arial',
+            color: '#ef4444',
+            stroke: '#000000',
+            strokeThickness: 4,
+            align: 'center',
+          },
+        );
+        text.setOrigin(0.5, 0.5);
+        
+        // Сохраняем анимацию с начальным смещением
+        this.tapAmountAnimations.set(key, {
+          text,
+          startTime: this.time.now,
+          amount,
+          initialDx: tapDx,
+        });
+      }
+
       showCellInfo(position: CellPosition) {
         // Проверяем feature flag
         if (!isFeatureEnabled('SHOW_CELL_INFO_POPUPS')) {
@@ -441,7 +498,7 @@ export function PhaserGame(props: PhaserGameProps) {
         }
         
         // Устанавливаем callback для показа анимации недостаточной силы
-        const { setInsufficientPowerCallback, setInsufficientInventoryCallback } = propsRef.current;
+        const { setInsufficientPowerCallback, setInsufficientInventoryCallback, setTapAmountCallback } = propsRef.current;
         if (setInsufficientPowerCallback) {
           setInsufficientPowerCallback((position: CellPosition, cellPower: number) => {
             this.showInsufficientPower(position, cellPower);
@@ -451,6 +508,12 @@ export function PhaserGame(props: PhaserGameProps) {
         if (setInsufficientInventoryCallback) {
           setInsufficientInventoryCallback((position: CellPosition) => {
             this.showInsufficientInventory(position);
+          });
+        }
+        // Устанавливаем callback для показа анимации тапа
+        if (setTapAmountCallback) {
+          setTapAmountCallback((position: CellPosition, amount: number) => {
+            this.showTapAmount(position, amount);
           });
         }
 
@@ -1064,6 +1127,38 @@ export function PhaserGame(props: PhaserGameProps) {
             const alpha = 1 - progress;
             
             anim.text.setPosition(screenX, screenY + offsetY);
+            anim.text.setAlpha(alpha);
+          }
+        }
+
+        // Обновляем анимации тапа
+        const tapAmountDuration = 1000; // 1 секунда
+        for (const [key, anim] of this.tapAmountAnimations.entries()) {
+          const elapsed = currentTime - anim.startTime;
+          if (elapsed >= tapAmountDuration) {
+            // Анимация завершена - удаляем
+            anim.text.destroy();
+            this.tapAmountAnimations.delete(key);
+          } else {
+            // Обновляем позицию и прозрачность
+            const viewRadius = getViewRadius();
+            const tileSize = getTileSize();
+            const canvasCenterX = tileSize * (viewRadius.x + 0.5);
+            const canvasCenterY = tileSize * (viewRadius.y + 0.5);
+            
+            const [x, y] = key.split(':').map(Number);
+            const dx = x - this.renderCenterX;
+            const dy = y - this.renderCenterY;
+            const screenX = canvasCenterX + dx * tileSize;
+            const screenY = canvasCenterY + dy * tileSize;
+            
+            // Движение вверх и затухание с учетом начального смещения по dx
+            const progress = elapsed / tapAmountDuration;
+            const offsetY = -tileSize * 0.3 - progress * tileSize * 0.4;
+            const alpha = 1 - progress;
+            
+            // Применяем начальное смещение по dx
+            anim.text.setPosition(screenX + anim.initialDx, screenY + offsetY);
             anim.text.setAlpha(alpha);
           }
         }

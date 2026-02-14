@@ -68,6 +68,14 @@ interface LeaderboardEntry {
   isOnline: boolean;
 }
 
+// Параметры клетки
+interface CellParams {
+  food: number; // Кол-во еды (0-255, шаг 8)
+  building: number; // Кол-во строительных единиц (0-255, шаг 8)
+  experience: number; // Кол-во опыта (0-255, шаг 8)
+  power: number; // Сила клетки (1-256, влияет на яркость)
+}
+
 // Функция для извлечения RGB компонентов из HEX цвета
 function getRGBComponents(hexColor: string): { r: number; g: number; b: number } {
   const hex = hexColor.replace('#', '');
@@ -97,19 +105,30 @@ function getCellPower(hexColor: string): number {
   return Math.max(1, r + 1); // От 1 до 256 (0-255 + 1)
 }
 
-// Вычисление веса одного элемента инвентаря
+// Вычисление веса одного элемента инвентаря из параметров
+// Вес = (количество * food / 16) + (количество * experience / 32)
+function getItemWeightFromParams(params: CellParams, count: number): number {
+  return (count * params.food / 16) + (count * params.experience / 32);
+}
+
+// Вычисление веса одного элемента инвентаря из цвета (для обратной совместимости)
 // Вес = (количество * зеленый компонент / 16) + (количество * синий компонент / 32)
-function getItemWeight(color: string, count: number): number {
+function getItemWeight(color: string, count: number, params?: CellParams): number {
+  if (params) {
+    return getItemWeightFromParams(params, count);
+  }
   const { g, b } = getRGBComponents(color);
   return (count * g / 16) + (count * b / 32);
 }
 
 // Вычисление общего веса инвентаря
-function getInventoryWeight(inventory: Record<string, number>): number {
+function getInventoryWeight(inventory: Record<string, number>, cellParamsByColor?: Map<string, CellParams>): number {
   let totalWeight = 0;
   for (const [color, count] of Object.entries(inventory)) {
     if (count > 0) {
-      totalWeight += getItemWeight(color, count);
+      // Пытаемся найти параметры клетки по цвету
+      const params = cellParamsByColor?.get(color);
+      totalWeight += getItemWeight(color, count, params);
     }
   }
   return Math.round(totalWeight); // Округляем до целого
@@ -406,6 +425,9 @@ function App() {
   const [cellColors, setCellColors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [cellParams, setCellParams] = useState<Map<string, CellParams>>(
+    () => new Map(),
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -427,6 +449,7 @@ function App() {
   const [insufficientPowerMessage, setInsufficientPowerMessage] = useState<{ position: CellPosition; cellPower: number; timestamp: number } | null>(null);
   const insufficientInventoryCallbackRef = useRef<((position: CellPosition) => void) | null>(null);
   const [insufficientInventoryMessage, setInsufficientInventoryMessage] = useState<{ position: CellPosition; timestamp: number } | null>(null);
+  const tapAmountCallbackRef = useRef<((position: CellPosition, amount: number) => void) | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editingName, setEditingName] = useState('');
 
@@ -491,13 +514,25 @@ function App() {
       (payload: {
         center: CellPosition;
         radius: number;
-        cells: { position: CellPosition; color: string }[];
+        cells: { position: CellPosition; color: string; params?: CellParams }[];
       }) => {
         setCellColors((prev) => {
           const next = new Map(prev);
           for (const cell of payload.cells) {
             const key = `${cell.position.x}:${cell.position.y}`;
             next.set(key, cell.color);
+          }
+          return next;
+        });
+        setCellParams((prev) => {
+          const next = new Map(prev);
+          for (const cell of payload.cells) {
+            if (cell.params) {
+              const key = `${cell.position.x}:${cell.position.y}`;
+              next.set(key, cell.params);
+              // Также сохраняем параметры по цвету для использования в инвентаре
+              next.set(cell.color, cell.params);
+            }
           }
           return next;
         });
@@ -522,7 +557,7 @@ function App() {
       }
     });
 
-    s.on('cell:updated', (data: { position: CellPosition; color: string }) => {
+    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams }) => {
       const key = `${data.position.x}:${data.position.y}`;
       
       // Обновляем цвет клетки
@@ -531,6 +566,17 @@ function App() {
         next.set(key, data.color);
         return next;
       });
+      
+      // Обновляем параметры клетки, если они есть
+      if (data.params) {
+        setCellParams((prev) => {
+          const next = new Map(prev);
+          next.set(key, data.params!);
+          // Также сохраняем параметры по цвету для использования в инвентаре
+          next.set(data.color, data.params!);
+          return next;
+        });
+      }
       
       // Если клетка стала белой - сбрасываем прогресс тапа и здоровье
       if (data.color === '#ffffff') {
@@ -570,6 +616,8 @@ function App() {
         required: number;
         color: string;
         health?: number;
+        tapAmount?: number;
+        insufficientInventory?: boolean;
       }) => {
         const key = `${data.position.x}:${data.position.y}`;
         setColorCellProgress((prev) => {
@@ -591,6 +639,27 @@ function App() {
             }
             return next;
           });
+        }
+        // Показываем анимацию тапа, если есть tapAmount
+        if (data.tapAmount !== undefined && data.tapAmount > 0 && tapAmountCallbackRef.current) {
+          tapAmountCallbackRef.current(data.position, data.tapAmount);
+        }
+        // Показываем сообщение о нехватке места в инвентаре, если сервер вернул этот флаг
+        if (data.insufficientInventory && insufficientInventoryCallbackRef.current) {
+          insufficientInventoryCallbackRef.current(data.position);
+          setInsufficientInventoryMessage({
+            position: data.position,
+            timestamp: Date.now(),
+          });
+          // Убираем сообщение через 3 секунды
+          setTimeout(() => {
+            setInsufficientInventoryMessage((prev) => {
+              if (prev && prev.position.x === data.position.x && prev.position.y === data.position.y) {
+                return null;
+              }
+              return prev;
+            });
+          }, 3000);
         }
       },
     );
@@ -717,8 +786,11 @@ function App() {
       });
       socket.emit('white:cell:tap', { position: pos });
     } else {
+      // Получаем параметры клетки по позиции или по цвету
+      const cellParamsForPos = cellParams.get(key) ?? cellParams.get(cellColor);
+      
       // Проверяем, достаточно ли силы сбора для тапа (новая формула)
-      const cellPower = getCellPower(cellColor);
+      const cellPower = cellParamsForPos?.power ?? getCellPower(cellColor);
       const multiplier = (me.power / 2) + (me.stamina / 2) - (me.defense ?? 0);
       const safeMultiplier = Math.max(0.1, multiplier);
       const requiredPower = me.collectionPower * safeMultiplier;
@@ -747,8 +819,8 @@ function App() {
       }
       
       // Проверяем, есть ли место в инвентаре
-      const minItemWeight = getItemWeight(cellColor, 1);
-      const currentWeight = getInventoryWeight(me.inventory);
+      const minItemWeight = getItemWeight(cellColor, 1, cellParamsForPos);
+      const currentWeight = getInventoryWeight(me.inventory, cellParams);
       const maxWeight = getMaxInventoryWeight(me.weight, me.stamina);
       
       if (currentWeight + minItemWeight > maxWeight) {
@@ -852,18 +924,22 @@ function App() {
               <>
                 <div style={{ marginBottom: '12px', padding: '8px', backgroundColor: '#1e293b', borderRadius: '4px' }}>
                   <div style={{ fontSize: '14px', color: '#94a3b8' }}>
-                    Вес инвентаря: <span style={{ color: getInventoryWeight(me.inventory) > getMaxInventoryWeight(me.weight, me.stamina) ? '#f87171' : '#22c55e' }}>
-                      {getInventoryWeight(me.inventory)} / {getMaxInventoryWeight(me.weight, me.stamina)}
+                    Вес инвентаря: <span style={{ color: getInventoryWeight(me.inventory, cellParams) > getMaxInventoryWeight(me.weight, me.stamina) ? '#f87171' : '#22c55e' }}>
+                      {getInventoryWeight(me.inventory, cellParams)} / {getMaxInventoryWeight(me.weight, me.stamina)}
                     </span>
       </div>
                 </div>
                 <ul className="inventory-list">
                   {sortedInventory.map(([color, count]) => {
-                    const satietyRestore = getGreenComponent(color);
-                    const cellPower = getCellPower(color);
-                    const { b } = getRGBComponents(color);
-                    const itemWeight = getItemWeight(color, count);
-                    const singleItemWeight = getItemWeight(color, 1);
+                    // Получаем параметры клетки по цвету
+                    const params = cellParams.get(color);
+                    // Используем параметры, если доступны, иначе вычисляем из цвета (для обратной совместимости)
+                    const satietyRestore = params?.food ?? getGreenComponent(color);
+                    const cellPower = params?.power ?? getCellPower(color);
+                    const experienceGain = params?.experience ?? getRGBComponents(color).b;
+                    const buildingAmount = params?.building ?? getRGBComponents(color).r;
+                    const itemWeight = getItemWeight(color, count, params);
+                    const singleItemWeight = getItemWeight(color, 1, params);
                     return (
                       <li key={color} className="inventory-item">
                         <span
@@ -871,10 +947,11 @@ function App() {
                           style={{ backgroundColor: color }}
                         />
                         <span className="inventory-count">{count}</span>
-                        <span className="inventory-power">Сила: {cellPower}</span>
-                        <span className="inventory-weight" style={{ fontSize: '12px', color: '#94a3b8', marginLeft: '8px' }}>
-                          Вес: {itemWeight} (1 шт. = {singleItemWeight.toFixed(2)})
-                        </span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', color: '#94a3b8' }}>
+                          <span>Сила: {cellPower}</span>
+                          <span>Еда: {satietyRestore} | Строй: {buildingAmount} | Опыт: {experienceGain}</span>
+                          <span>Вес: {itemWeight} (1 шт. = {singleItemWeight.toFixed(2)})</span>
+                        </div>
                         <div className="inventory-item-actions">
                           <button
                             className="use-item-button use-satiety-button"
@@ -888,9 +965,9 @@ function App() {
                             className="use-item-button use-experience-button"
                             onClick={() => useInventoryItem(color, 'experience')}
                             disabled={count <= 0}
-                            title={`Получить ${b} опыта`}
+                            title={`Получить ${experienceGain} опыта`}
                           >
-                            ⭐ +{b}
+                            ⭐ +{experienceGain}
                           </button>
       </div>
                       </li>
@@ -997,12 +1074,14 @@ function App() {
                 const key = `${selectedCell.x}:${selectedCell.y}`;
                 const health = cellHealth.get(key);
                 const progress = colorCellProgress.get(key);
-                const { r, g, b } = getRGBComponents(cellColor);
-                const cellPower = getCellPower(cellColor);
-                const satietyRestore = getGreenComponent(cellColor);
-                const experienceGain = b;
-                // Показываем диапазон возможных значений: от 1 до ceil(r/32)
-                const maxAmount = Math.max(1, Math.ceil(r / 32));
+                // Получаем параметры клетки
+                const params = cellParams.get(key) ?? cellParams.get(cellColor);
+                const cellPower = params?.power ?? getCellPower(cellColor);
+                const satietyRestore = params?.food ?? getGreenComponent(cellColor);
+                const experienceGain = params?.experience ?? getRGBComponents(cellColor).b;
+                const buildingAmount = params?.building ?? getRGBComponents(cellColor).r;
+                // Показываем диапазон возможных значений: от 1 до ceil(building/32)
+                const maxAmount = Math.max(1, Math.ceil(buildingAmount / 32));
                 const collectedAmountRange = maxAmount > 1 ? `1-${maxAmount}` : '1';
                 const isInCollection = me?.unlockedColors.includes(cellColor) ?? false;
 
@@ -1028,9 +1107,9 @@ function App() {
                       </span>
                     </div>
                     <div className="cell-info-item">
-                      <span className="cell-info-label">RGB:</span>
+                      <span className="cell-info-label">Параметры:</span>
                       <span className="cell-info-value">
-                        R: {r}, G: {g}, B: {b}
+                        Еда: {satietyRestore} | Строй: {buildingAmount} | Опыт: {experienceGain} | Сила: {cellPower}
                       </span>
                     </div>
                     {health !== undefined && (
@@ -1582,12 +1661,12 @@ if (experience >= requiredExperience):
                 <span className="stat-icon-emoji">🍖</span>
                 <span className="stat-icon-value">{me.satiety}/{me.weight}</span>
               </div>
-              <div className="stat-icon" title={`Вместительность инвентаря: ${getInventoryWeight(me.inventory)} / ${getMaxInventoryWeight(me.weight, me.stamina)}`}>
+              <div className="stat-icon" title={`Вместительность инвентаря: ${getInventoryWeight(me.inventory, cellParams)} / ${getMaxInventoryWeight(me.weight, me.stamina)}`}>
                 <span className="stat-icon-emoji">🎒</span>
                 <span className="stat-icon-value" style={{
-                  color: getInventoryWeight(me.inventory) > getMaxInventoryWeight(me.weight, me.stamina) ? '#f87171' : undefined
+                  color: getInventoryWeight(me.inventory, cellParams) > getMaxInventoryWeight(me.weight, me.stamina) ? '#f87171' : undefined
                 }}>
-                  {getInventoryWeight(me.inventory)}/{getMaxInventoryWeight(me.weight, me.stamina)}
+                  {getInventoryWeight(me.inventory, cellParams)}/{getMaxInventoryWeight(me.weight, me.stamina)}
                 </span>
               </div>
             </div>
@@ -1669,6 +1748,9 @@ if (experience >= requiredExperience):
             insufficientInventoryMessage={insufficientInventoryMessage}
             setInsufficientInventoryCallback={(callback) => {
               insufficientInventoryCallbackRef.current = callback;
+            }}
+            setTapAmountCallback={(callback) => {
+              tapAmountCallbackRef.current = callback;
             }}
           />
         </div>

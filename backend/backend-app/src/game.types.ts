@@ -67,3 +67,18 @@ export interface LocalChat {
   participants: string[]; // player IDs
   messages: LocalChatMessage[];
 }
+
+// Параметры клетки
+export interface CellParams {
+  food: number; // Кол-во еды (0-255, шаг 8)
+  building: number; // Кол-во строительных единиц (0-255, шаг 8)
+  experience: number; // Кол-во опыта (0-255, шаг 8)
+  power: number; // Сила клетки (1-256, влияет на яркость)
+}
+
+// Данные клетки для передачи на фронтенд
+export interface CellData {
+  position: CellPosition;
+  color: CellColor;
+  params?: CellParams; // Опционально, для обратной совместимости
+}
