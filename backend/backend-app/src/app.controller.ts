@@ -52,4 +52,32 @@ export class AppController {
       message: `Удалено клеток: ${result.deletedCount}. Карта будет перегенерирована при следующем обращении к клеткам.`,
     };
   }
+
+  @Get('players')
+  async getPlayers(): Promise<{ players: any[]; count: number }> {
+    const players = await this.gameService.getPlayers();
+    return {
+      players: players.map(p => ({
+        id: p.id,
+        name: p.name,
+        position: p.position,
+        level: p.level,
+        experience: p.experience,
+        totalCollected: p.totalCollected,
+        satiety: p.satiety,
+        weight: p.weight,
+        stamina: p.stamina,
+        collectionPower: p.collectionPower,
+        power: p.power,
+        health: p.health,
+        maxHealth: p.maxHealth,
+        defense: p.defense,
+        luck: p.luck,
+        regeneration: p.regeneration,
+        inventory: p.inventory,
+        unlockedColors: p.unlockedColors,
+      })),
+      count: players.length,
+    };
+  }
 }

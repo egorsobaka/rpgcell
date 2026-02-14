@@ -440,15 +440,38 @@ function App() {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
       timeout: 20000,
+      // Отправляем playerId сразу при подключении, если есть
+      auth: savedPlayerId ? { playerId: savedPlayerId } : undefined,
     });
     setSocket(s);
 
     // Если есть сохраненный ID, отправляем его на сервер для восстановления
-    if (savedPlayerId) {
-      s.once('connect', () => {
+    // Отправляем при каждом подключении (включая переподключения)
+    const sendPlayerRestore = () => {
+      if (savedPlayerId) {
+        console.log('Sending player:restore with playerId:', savedPlayerId);
         s.emit('player:restore', { playerId: savedPlayerId });
+      }
+    };
+    
+    // Отправляем сразу при подключении (даже если еще не полностью подключен)
+    // Socket.IO позволяет отправлять события до полного подключения
+    if (savedPlayerId) {
+      // Пытаемся отправить сразу
+      sendPlayerRestore();
+      
+      // Также отправляем при полном подключении
+      s.once('connect', () => {
+        console.log('Socket connected, sending player:restore');
+        sendPlayerRestore();
       });
     }
+    
+    // Также отправляем при переподключении
+    s.on('reconnect', () => {
+      console.log('Socket reconnected, sending player:restore');
+      sendPlayerRestore();
+    });
 
     s.on('state:init', (payload: any) => {
       // Сохраняем ID игрока в localStorage
@@ -856,8 +879,8 @@ function App() {
                           <button
                             className="use-item-button use-satiety-button"
                             onClick={() => useInventoryItem(color, 'satiety')}
-                            disabled={count <= 0}
-                            title={`Восстановить ${satietyRestore} сытости`}
+                            disabled={count <= 0 || (me.satiety >= me.weight)}
+                            title={me.satiety >= me.weight ? 'Сытость уже полная' : `Восстановить ${satietyRestore} сытости`}
                           >
                             🍖 +{satietyRestore}
         </button>
@@ -1094,6 +1117,62 @@ function App() {
             <h2>Параметры игрока</h2>
             <div className="player-stats-full">
               <div className="stat-item">
+                <span className="stat-label">Имя:</span>
+                {isEditingName ? (
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          if (editingName.trim()) {
+                            socket?.emit('player:name:change', { newName: editingName.trim() });
+                          } else {
+                            setIsEditingName(false);
+                            setEditingName('');
+                          }
+                        } else if (e.key === 'Escape') {
+                          setIsEditingName(false);
+                          setEditingName('');
+                        }
+                      }}
+                      onBlur={() => {
+                        if (editingName.trim()) {
+                          socket?.emit('player:name:change', { newName: editingName.trim() });
+                        } else {
+                          setIsEditingName(false);
+                          setEditingName('');
+                        }
+                      }}
+                      autoFocus
+                      style={{
+                        border: '1px solid rgba(148, 163, 184, 0.3)',
+                        borderRadius: '4px',
+                        padding: '4px 8px',
+                        background: 'rgba(15, 23, 42, 0.9)',
+                        color: '#e5e7eb',
+                        fontSize: '12px',
+                        minWidth: '150px',
+                      }}
+                      maxLength={50}
+                    />
+                  </div>
+                ) : (
+                  <span
+                    className="stat-value"
+                    onClick={() => {
+                      setEditingName(me.name);
+                      setIsEditingName(true);
+                    }}
+                    style={{ cursor: 'pointer', textDecoration: 'underline' }}
+                    title="Нажмите, чтобы изменить имя"
+                  >
+                    {me.name}
+                  </span>
+                )}
+              </div>
+              <div className="stat-item">
                 <span className="stat-label">Сытость:</span>
                 <div className="stat-bar">
                   <div
@@ -1122,6 +1201,17 @@ function App() {
               <div className="stat-item">
                 <span className="stat-label">Сила сбора:</span>
                 <span className="stat-value">{me.collectionPower}</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Кол-во за тап:</span>
+                <span className="stat-value">
+                  {(() => {
+                    const numerator = me.power + me.stamina;
+                    const denominator = numerator + (me.defense ?? 0);
+                    const multiplier = denominator > 0 ? numerator / denominator : 1;
+                    return Math.max(1, Math.ceil(me.collectionPower * multiplier));
+                  })()}
+                </span>
               </div>
               <div className="stat-item">
                 <span className="stat-label">Множитель сбора:</span>
@@ -1457,52 +1547,6 @@ if (experience >= requiredExperience):
         {me && (
           <div className="player-info-container">
             <div className="player-name-experience-row">
-              {isEditingName ? (
-                <div className="stat-icon player-name-edit">
-                  <input
-                    type="text"
-                    value={editingName}
-                    onChange={(e) => setEditingName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        if (editingName.trim()) {
-                          socket?.emit('player:name:change', { newName: editingName.trim() });
-                        } else {
-                          setIsEditingName(false);
-                          setEditingName('');
-                        }
-                      } else if (e.key === 'Escape') {
-                        setIsEditingName(false);
-                        setEditingName('');
-                      }
-                    }}
-                    onBlur={() => {
-                      if (editingName.trim()) {
-                        socket?.emit('player:name:change', { newName: editingName.trim() });
-                      } else {
-                        setIsEditingName(false);
-                        setEditingName('');
-                      }
-                    }}
-                    autoFocus
-                    className="name-input"
-                    maxLength={50}
-                  />
-                </div>
-              ) : (
-                <div 
-                  className="stat-icon player-name-display"
-                  onClick={() => {
-                    setEditingName(me.name);
-                    setIsEditingName(true);
-                  }}
-                  title="Нажмите, чтобы изменить имя"
-                  style={{ cursor: 'pointer' }}
-                >
-                  <span className="stat-icon-emoji">👤</span>
-                  <span className="stat-icon-value">{me.name}</span>
-                </div>
-              )}
               <div 
                 className={`stat-icon ${me.availableUpgrades > 0 ? 'upgrades-available-clickable' : ''}`}
                 onClick={() => {

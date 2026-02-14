@@ -44,43 +44,97 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleConnection(client: Socket): Promise<void> {
     this.logger.log(`Client connected: ${client.id}`);
     
+    // Проверяем, есть ли playerId в auth данных (отправляется при подключении)
+    const authData = (client.handshake as any).auth;
+    const authPlayerId = authData?.playerId;
+    
     // Временно устанавливаем маппинг на socket.id, чтобы движение работало сразу
     // Если придет player:restore, маппинг будет обновлен
     this.socketToPlayerId.set(client.id, client.id);
     
     let connectionHandled = false;
     
+    // Если есть playerId в auth, сразу пытаемся восстановить игрока
+    if (authPlayerId) {
+      this.logger.log(`Found playerId in auth: ${authPlayerId}, attempting to restore`);
+      const existingPlayer = await this.gameService.getPlayerById(authPlayerId);
+      if (existingPlayer) {
+        this.logger.log(`Restoring existing player from auth: ${authPlayerId}`);
+        connectionHandled = true;
+        this.socketToPlayerId.set(client.id, authPlayerId);
+        this.onlinePlayers.add(authPlayerId);
+        await this.sendInitialState(client, existingPlayer);
+        // Регистрируем обработчик для обновлений при переподключении
+        client.on('player:restore', async (data: { playerId: string }) => {
+          if (data.playerId === authPlayerId) {
+            const player = await this.gameService.getPlayerById(data.playerId);
+            if (player) {
+              await this.sendInitialState(client, player);
+            }
+          }
+        });
+        return; // Выходим, не создаем нового игрока и не устанавливаем таймаут
+      } else {
+        this.logger.warn(`Player with ID ${authPlayerId} from auth not found in database`);
+      }
+    }
+    
     // Обработчик для восстановления игрока по сохраненному ID
-    client.once('player:restore', async (data: { playerId: string }) => {
-      if (connectionHandled) return;
+    // Используем 'on' вместо 'once', чтобы обработать событие даже при переподключении
+    client.on('player:restore', async (data: { playerId: string }) => {
+      this.logger.log(`Received player:restore for playerId: ${data.playerId}, socket: ${client.id}, connectionHandled: ${connectionHandled}`);
+      
+      // Если уже обработано, игнорируем повторные запросы
+      if (connectionHandled) {
+        // Но если это переподключение с тем же playerId, обновляем состояние
+        const currentPlayerId = this.socketToPlayerId.get(client.id);
+        if (currentPlayerId === data.playerId) {
+          this.logger.log(`Updating state for existing player: ${data.playerId}`);
+          const existingPlayer = await this.gameService.getPlayerById(data.playerId);
+          if (existingPlayer) {
+            await this.sendInitialState(client, existingPlayer);
+          }
+        }
+        return;
+      }
       connectionHandled = true;
       
       const existingPlayer = await this.gameService.getPlayerById(data.playerId);
       if (existingPlayer) {
+        this.logger.log(`Restoring existing player: ${data.playerId}`);
         // Обновляем маппинг socket.id -> playerId
         this.socketToPlayerId.set(client.id, data.playerId);
         // Добавляем игрока в список онлайн
         this.onlinePlayers.add(data.playerId);
         await this.sendInitialState(client, existingPlayer);
       } else {
-        // Если игрок не найден, создаем нового (маппинг уже установлен на client.id)
-        const newPlayer = await this.gameService.getOrCreatePlayer(client.id);
+        // Если игрок не найден, НЕ создаем нового - ждем, пока пользователь перезагрузит страницу
+        // или используем сохраненный playerId для создания нового игрока с этим ID
+        this.logger.warn(`Player with ID ${data.playerId} not found, but playerId was provided. Creating new player with this ID.`);
+        const newPlayer = await this.gameService.getOrCreatePlayer(data.playerId);
+        // Обновляем маппинг socket.id -> playerId
+        this.socketToPlayerId.set(client.id, data.playerId);
         // Добавляем игрока в список онлайн
-        this.onlinePlayers.add(newPlayer.id);
+        this.onlinePlayers.add(data.playerId);
         await this.sendInitialState(client, newPlayer);
       }
     });
     
-    // Если не было события восстановления в течение 200ms, создаем нового игрока
+    // Если не было события восстановления в течение 3000ms, создаем нового игрока с новым UUID
+    // Увеличиваем таймаут, чтобы дать время для отправки player:restore (особенно при перезагрузке страницы)
     setTimeout(async () => {
       if (connectionHandled) return;
       connectionHandled = true;
       
-      const newPlayer = await this.gameService.getOrCreatePlayer(client.id);
+      this.logger.warn(`No player:restore event received for socket ${client.id} within timeout. Creating new player.`);
+      // Создаем нового игрока с новым UUID (не client.id)
+      const newPlayer = await this.gameService.createNewPlayer();
+      // Обновляем маппинг socket.id -> playerId
+      this.socketToPlayerId.set(client.id, newPlayer.id);
       // Добавляем игрока в список онлайн
       this.onlinePlayers.add(newPlayer.id);
       await this.sendInitialState(client, newPlayer);
-    }, 200);
+    }, 3000);
   }
 
   private async sendInitialState(client: Socket, player: PlayerState): Promise<void> {
@@ -369,9 +423,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): Promise<void> {
     const useType = body.useType || 'satiety';
     const playerId = this.getPlayerId(client);
+    
+    // Сохраняем текущий уровень до использования предмета
+    const playerBefore = await this.gameService.getPlayerById(playerId);
+    const levelBefore = playerBefore?.level ?? 0;
+    
     const result = await this.gameService.useInventoryItem(playerId, body.color, useType);
     if (result.success) {
+      // Проверяем, изменился ли уровень (может измениться при использовании опыта)
+      const playerAfter = await this.gameService.getPlayerById(playerId);
+      const levelAfter = playerAfter?.level ?? 0;
+      
       await this.broadcastPlayers();
+      
+      // Если уровень изменился, обновляем лидерборд
+      if (levelAfter !== levelBefore) {
+        await this.broadcastLeaderboard();
+      }
     }
     // Отправляем результат клиенту
     client.emit('inventory:used', {
@@ -487,10 +555,25 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() body: { upgradeType: 'weight' | 'stamina' | 'collectionPower' | 'power' | 'maxHealth' | 'defense' | 'luck' | 'regeneration' },
   ): Promise<void> {
     const playerId = this.getPlayerId(client);
+    
+    // Сохраняем текущий уровень до улучшения
+    const playerBefore = await this.gameService.getPlayerById(playerId);
+    const levelBefore = playerBefore?.level ?? 0;
+    
     const result = await this.gameService.applyUpgrade(playerId, body.upgradeType);
     if (result.success) {
+      // Проверяем, изменился ли уровень (может измениться при использовании опыта)
+      const playerAfter = await this.gameService.getPlayerById(playerId);
+      const levelAfter = playerAfter?.level ?? 0;
+      
       // Обновляем список игроков, чтобы все клиенты получили обновленное состояние
       await this.broadcastPlayers();
+      
+      // Если уровень изменился, обновляем лидерборд
+      if (levelAfter !== levelBefore) {
+        await this.broadcastLeaderboard();
+      }
+      
       // Отправляем результат клиенту
       client.emit('player:upgrade:result', { success: true });
     } else {
@@ -508,6 +591,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (result.success) {
       // Обновляем список игроков, чтобы все клиенты получили обновленное состояние
       await this.broadcastPlayers();
+      // Обновляем лидерборд для всех игроков (имя изменилось)
+      await this.broadcastLeaderboard();
       // Отправляем результат клиенту
       client.emit('player:name:change:result', { success: true });
     } else {

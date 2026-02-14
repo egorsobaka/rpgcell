@@ -197,18 +197,18 @@ export class GameService {
     return playerState;
   }
 
-  async getOrCreatePlayer(clientId: string): Promise<PlayerState> {
+  async getOrCreatePlayer(playerId: string): Promise<PlayerState> {
     // Проверяем кеш
-    const cached = this.playersCache.get(clientId);
+    const cached = this.playersCache.get(playerId);
     if (cached) return cached;
 
     // Загружаем из MongoDB
-    let player = await this.playerModel.findOne({ id: clientId }).lean().exec();
+    let player = await this.playerModel.findOne({ id: playerId }).lean().exec();
     
     // Миграция: если у существующего игрока нет новых полей, инициализируем их
     if (player && (player.health === undefined || player.maxHealth === undefined || player.defense === undefined || player.luck === undefined || player.regeneration === undefined)) {
       await this.playerModel.findOneAndUpdate(
-        { id: clientId },
+        { id: playerId },
         {
           $set: {
             health: player.health ?? 100,
@@ -220,14 +220,14 @@ export class GameService {
         },
       );
       // Перезагружаем игрока после миграции
-      player = await this.playerModel.findOne({ id: clientId }).lean().exec();
+      player = await this.playerModel.findOne({ id: playerId }).lean().exec();
     }
     
     if (!player) {
-      // Создаем нового игрока
+      // Создаем нового игрока с переданным playerId (который должен быть постоянным UUID)
       const newPlayer = new this.playerModel({
-        id: clientId,
-        name: `Player-${clientId.slice(0, 4)}`,
+        id: playerId,
+        name: `Player-${playerId.slice(0, 4)}`,
         position: { x: 0, y: 0 },
         unlockedColors: [],
         inventory: {},
@@ -266,13 +266,19 @@ export class GameService {
       );
       await this.localChatModel.updateOne(
         { key },
-        { $addToSet: { participants: clientId } },
+        { $addToSet: { participants: playerId } },
       );
     }
     
     const playerState = this.playerToState(player);
-    this.playersCache.set(clientId, playerState);
+    this.playersCache.set(playerId, playerState);
     return playerState;
+  }
+
+  // Создать нового игрока с новым постоянным UUID
+  async createNewPlayer(): Promise<PlayerState> {
+    const newPlayerId = randomUUID();
+    return await this.getOrCreatePlayer(newPlayerId);
   }
 
   private playerToState(player: any): PlayerState {
@@ -428,6 +434,10 @@ export class GameService {
     let experienceGained = 0;
 
     if (useType === 'satiety') {
+      // Проверяем, не полная ли уже сытость
+      if (player.satiety >= player.weight) {
+        return { success: false, satietyRestored: 0, newSatiety: player.satiety, experienceGained: 0, newExperience: player.experience };
+      }
       // Вычисляем восстановление сытости на основе зеленого компонента
       const greenComponent = this.getGreenComponent(color);
       satietyRestored = greenComponent;
@@ -996,13 +1006,12 @@ export class GameService {
       if (winnerId) {
         const winner = await this.getOrCreatePlayer(winnerId);
         if (winner) {
-          // Вычисляем количество собранных единиц как рандомное от 1 до ceil(r/32)
-          const { r } = this.getRGBComponents(cellColor);
-          const maxAmount = Math.max(1, Math.ceil(r / 32));
-          const baseAmount = Math.floor(Math.random() * maxAmount) + 1;
-          // Добавляем бонус от удачи: каждые 5 единиц удачи дают +1 к количеству
-          const luckBonus = Math.floor(winner.luck / 5);
-          collectedAmount = baseAmount + luckBonus;
+          // Вычисляем количество собранных единиц по формуле: collectionPower * ((power + stamina) / (power + stamina + defense))
+          const numerator = winner.power + winner.stamina;
+          const denominator = numerator + (winner.defense ?? 0);
+          // Защита от деления на ноль
+          const multiplier = denominator > 0 ? numerator / denominator : 1;
+          collectedAmount = Math.max(1, Math.ceil(winner.collectionPower * multiplier));
           
           // Проверяем ограничение по весу инвентаря
           const currentWeight = this.getInventoryWeight(winner.inventory);
