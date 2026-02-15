@@ -14,6 +14,7 @@ export interface PlayerInfo {
   satiety?: number;
   weight?: number;
   name?: string;
+  skin?: string;
 }
 
 export interface PhaserGameProps {
@@ -33,6 +34,7 @@ export interface PhaserGameProps {
   playerWeight?: number;
   playerCollectionPower?: number;
   playerName?: string;
+  playerSkin?: string;
   selectedCell: CellPosition | null;
   onResourceCollected?: (position: CellPosition, amount: number) => void;
   setResourceCollectedCallback?: (callback: (position: CellPosition, amount: number) => void) => void;
@@ -188,6 +190,12 @@ export function PhaserGame(props: PhaserGameProps) {
       // Циклический массив смещений по dx
       private readonly tapDxValues = [-3, -6, -9, -12, -9, -6, -3, 0, 3, 6, 9, 12, 9, 6, 3, 0];
       private tapDxIndex = 0; // Текущий индекс в массиве смещений
+      // Спрайты игроков: ключ - playerId или 'current', значение - Phaser.GameObjects.Image
+      private playerSprites = new Map<string, Phaser.GameObjects.Image>();
+      // Загруженные скины: ключ - URL скина, значение - true
+      private loadedSkins = new Set<string>();
+      // Текущие скины игроков: ключ - playerId или 'current', значение - skinUrl
+      private currentSkins = new Map<string, string>();
 
       constructor() {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -666,6 +674,90 @@ export function PhaserGame(props: PhaserGameProps) {
         });
       }
 
+      // Загрузить скин для игрока
+      private loadPlayerSkin(playerId: string, skinUrl: string): void {
+        const skinKey = `player-skin-${playerId}-${skinUrl}`;
+        
+        // Если текстура уже существует, помечаем как загруженную
+        if (this.textures.exists(skinKey)) {
+          this.loadedSkins.add(skinUrl);
+          return;
+        }
+
+        // Если уже загружается, не загружаем повторно
+        if (this.loadedSkins.has(skinUrl)) {
+          return;
+        }
+
+        // Загружаем скин
+        this.load.image(skinKey, `http://localhost:3000${skinUrl}`);
+        this.load.once(`filecomplete-image-${skinKey}`, () => {
+          this.loadedSkins.add(skinUrl);
+        });
+        this.load.start();
+      }
+
+      // Создать или обновить спрайт игрока
+      private updatePlayerSprite(
+        playerId: string,
+        screenX: number,
+        screenY: number,
+        tileSize: number,
+        skinUrl?: string,
+        isCurrentPlayer: boolean = false,
+      ): void {
+        const key = isCurrentPlayer ? 'current' : playerId;
+        let sprite = this.playerSprites.get(key);
+        const previousSkin = this.currentSkins.get(key);
+
+        // Если скин изменился, удаляем старый спрайт
+        if (previousSkin !== skinUrl) {
+          if (sprite) {
+            sprite.destroy();
+            this.playerSprites.delete(key);
+            sprite = undefined;
+          }
+          // Обновляем текущий скин
+          if (skinUrl) {
+            this.currentSkins.set(key, skinUrl);
+          } else {
+            this.currentSkins.delete(key);
+          }
+        }
+
+        if (skinUrl) {
+          // Загружаем скин, если нужно
+          this.loadPlayerSkin(playerId, skinUrl);
+
+          const skinKey = `player-skin-${playerId}-${skinUrl}`;
+          if (this.textures.exists(skinKey)) {
+            // Создаем или обновляем спрайт
+            if (!sprite) {
+              sprite = this.add.image(screenX, screenY, skinKey);
+              sprite.setDisplaySize(tileSize - (isCurrentPlayer ? 4 : 8), tileSize - (isCurrentPlayer ? 4 : 8));
+              sprite.setDepth(100);
+              this.playerSprites.set(key, sprite);
+            } else {
+              // Обновляем позицию и размер
+              sprite.setPosition(screenX, screenY);
+              sprite.setDisplaySize(tileSize - (isCurrentPlayer ? 4 : 8), tileSize - (isCurrentPlayer ? 4 : 8));
+              // Если текстура изменилась, обновляем
+              if (sprite.texture.key !== skinKey) {
+                sprite.setTexture(skinKey);
+              }
+            }
+            return; // Не показываем стандартный спрайт
+          }
+        } else {
+          // Если скина нет, удаляем спрайт
+          if (sprite) {
+            sprite.destroy();
+            this.playerSprites.delete(key);
+          }
+          this.currentSkins.delete(key);
+        }
+      }
+
       override update() {
         const {
           playerPosition,
@@ -676,6 +768,7 @@ export function PhaserGame(props: PhaserGameProps) {
           cellConstructionPoints = new Map(),
           cellConstructionTypes = new Map(),
           selectedCell,
+          playerSkin,
         } = propsRef.current;
         this.graphics.clear();
 
@@ -904,57 +997,92 @@ export function PhaserGame(props: PhaserGameProps) {
           }
         }
 
-        // Игрок в центре экрана - черная окружность с глазами и лапками
-        // Размер игрока пропорционален размеру клеток
+        // Игрок в центре экрана
         const playerRadius = tileSize / 2 - 2;
+        const { playerId } = propsRef.current;
         
-        // Тело игрока (черная окружность)
-        this.graphics.fillStyle(0x000000, 1);
-        this.graphics.fillCircle(canvasCenterX, canvasCenterY, playerRadius);
+        // Обновляем спрайт текущего игрока
+        // playerSkin уже получен из propsRef.current выше
+        if (playerSkin && playerId) {
+          this.updatePlayerSprite(playerId, canvasCenterX, canvasCenterY, tileSize, playerSkin, true);
+        } else {
+          // Удаляем спрайт, если скина нет
+          const currentSprite = this.playerSprites.get('current');
+          if (currentSprite) {
+            currentSprite.destroy();
+            this.playerSprites.delete('current');
+            this.currentSkins.delete('current');
+          }
+        }
+        
+        // Если нет спрайта скина, рисуем стандартный спрайт с глазами и лапками
+        if (!this.playerSprites.has('current')) {
+          // Стандартный спрайт (черная окружность)
+          this.graphics.fillStyle(0x000000, 1);
+          this.graphics.fillCircle(canvasCenterX, canvasCenterY, playerRadius);
 
-        // Глаза (белые точки) - увеличены пропорционально
-        const eyeSize = Math.max(4, tileSize / 16);
-        const eyeOffsetX = playerRadius * 0.3;
-        const eyeOffsetY = -playerRadius * 0.2;
-        this.graphics.fillStyle(0xffffff, 1);
-        this.graphics.fillCircle(
-          canvasCenterX - eyeOffsetX,
-          canvasCenterY + eyeOffsetY,
-          eyeSize,
-        );
-        this.graphics.fillCircle(
-          canvasCenterX + eyeOffsetX,
-          canvasCenterY + eyeOffsetY,
-          eyeSize,
-        );
+          // Глаза (белые точки) - увеличены пропорционально
+          const eyeSize = Math.max(4, tileSize / 16);
+          const eyeOffsetX = playerRadius * 0.3;
+          const eyeOffsetY = -playerRadius * 0.2;
+          this.graphics.fillStyle(0xffffff, 1);
+          this.graphics.fillCircle(
+            canvasCenterX - eyeOffsetX,
+            canvasCenterY + eyeOffsetY,
+            eyeSize,
+          );
+          this.graphics.fillCircle(
+            canvasCenterX + eyeOffsetX,
+            canvasCenterY + eyeOffsetY,
+            eyeSize,
+          );
 
-        // Лапки (4 маленьких кружка снизу) - увеличены пропорционально
-        const legSize = Math.max(3, tileSize / 24);
-        const legOffsetY = playerRadius * 0.6;
-        const legOffsetX = playerRadius * 0.4;
-        this.graphics.fillStyle(0x000000, 1);
-        this.graphics.fillCircle(
-          canvasCenterX - legOffsetX,
-          canvasCenterY + legOffsetY,
-          legSize,
-        );
-        this.graphics.fillCircle(
-          canvasCenterX - legOffsetX * 0.3,
-          canvasCenterY + legOffsetY,
-          legSize,
-        );
-        this.graphics.fillCircle(
-          canvasCenterX + legOffsetX * 0.3,
-          canvasCenterY + legOffsetY,
-          legSize,
-        );
-        this.graphics.fillCircle(
-          canvasCenterX + legOffsetX,
-          canvasCenterY + legOffsetY,
-          legSize,
-        );
+          // Лапки (4 маленьких кружка снизу) - увеличены пропорционально
+          const legSize = Math.max(3, tileSize / 24);
+          const legOffsetY = playerRadius * 0.6;
+          const legOffsetX = playerRadius * 0.4;
+          this.graphics.fillStyle(0x000000, 1);
+          this.graphics.fillCircle(
+            canvasCenterX - legOffsetX,
+            canvasCenterY + legOffsetY,
+            legSize,
+          );
+          this.graphics.fillCircle(
+            canvasCenterX - legOffsetX * 0.3,
+            canvasCenterY + legOffsetY,
+            legSize,
+          );
+          this.graphics.fillCircle(
+            canvasCenterX + legOffsetX * 0.3,
+            canvasCenterY + legOffsetY,
+            legSize,
+          );
+          this.graphics.fillCircle(
+            canvasCenterX + legOffsetX,
+            canvasCenterY + legOffsetY,
+            legSize,
+          );
+        }
 
-        // Прочие игроки - тоже черные окружности с глазами и лапками
+        // Удаляем спрайты игроков, которые больше не видны
+        const visiblePlayerIds = new Set<string>();
+        otherPlayers.forEach((p) => {
+          const dx = p.position.x - this.renderCenterX;
+          const dy = p.position.y - this.renderCenterY;
+          if (Math.abs(dx) <= viewRadius.x + 1 && Math.abs(dy) <= viewRadius.y + 1) {
+            visiblePlayerIds.add(p.id);
+          }
+        });
+        
+        this.playerSprites.forEach((sprite, playerId) => {
+          if (playerId !== 'current' && !visiblePlayerIds.has(playerId)) {
+            sprite.destroy();
+            this.playerSprites.delete(playerId);
+            this.currentSkins.delete(playerId);
+          }
+        });
+
+        // Прочие игроки
         otherPlayers.forEach((p) => {
           const dx = p.position.x - this.renderCenterX;
           const dy = p.position.y - this.renderCenterY;
@@ -966,35 +1094,51 @@ export function PhaserGame(props: PhaserGameProps) {
           const screenY = canvasCenterY + dy * tileSize;
           const otherPlayerRadius = tileSize / 2 - 4;
 
-          // Тело игрока (черная окружность)
-          this.graphics.fillStyle(0x000000, 1);
-          this.graphics.fillCircle(screenX, screenY, otherPlayerRadius);
+          // Обновляем спрайт игрока
+          if (p.skin) {
+            this.updatePlayerSprite(p.id, screenX, screenY, tileSize, p.skin, false);
+          } else {
+            // Удаляем спрайт, если скина нет
+            const sprite = this.playerSprites.get(p.id);
+            if (sprite) {
+              sprite.destroy();
+              this.playerSprites.delete(p.id);
+              this.currentSkins.delete(p.id);
+            }
+          }
 
-          // Глаза - увеличены пропорционально
-          const eyeSize = Math.max(4, tileSize / 16);
-          const eyeOffsetX = otherPlayerRadius * 0.3;
-          const eyeOffsetY = -otherPlayerRadius * 0.2;
-          this.graphics.fillStyle(0xffffff, 1);
-          this.graphics.fillCircle(
-            screenX - eyeOffsetX,
-            screenY + eyeOffsetY,
-            eyeSize,
-          );
-          this.graphics.fillCircle(
-            screenX + eyeOffsetX,
-            screenY + eyeOffsetY,
-            eyeSize,
-          );
+          // Если нет спрайта скина, рисуем стандартный спрайт с глазами и лапками
+          if (!this.playerSprites.has(p.id)) {
+            // Стандартный спрайт (черная окружность)
+            this.graphics.fillStyle(0x000000, 1);
+            this.graphics.fillCircle(screenX, screenY, otherPlayerRadius);
 
-          // Лапки - увеличены пропорционально
-          const legSize = Math.max(3, tileSize / 24);
-          const legOffsetY = otherPlayerRadius * 0.6;
-          const legOffsetX = otherPlayerRadius * 0.4;
-          this.graphics.fillStyle(0x000000, 1);
-          this.graphics.fillCircle(screenX - legOffsetX, screenY + legOffsetY, legSize);
-          this.graphics.fillCircle(screenX - legOffsetX * 0.3, screenY + legOffsetY, legSize);
-          this.graphics.fillCircle(screenX + legOffsetX * 0.3, screenY + legOffsetY, legSize);
-          this.graphics.fillCircle(screenX + legOffsetX, screenY + legOffsetY, legSize);
+            // Глаза - увеличены пропорционально
+            const eyeSize = Math.max(4, tileSize / 16);
+            const eyeOffsetX = otherPlayerRadius * 0.3;
+            const eyeOffsetY = -otherPlayerRadius * 0.2;
+            this.graphics.fillStyle(0xffffff, 1);
+            this.graphics.fillCircle(
+              screenX - eyeOffsetX,
+              screenY + eyeOffsetY,
+              eyeSize,
+            );
+            this.graphics.fillCircle(
+              screenX + eyeOffsetX,
+              screenY + eyeOffsetY,
+              eyeSize,
+            );
+
+            // Лапки - увеличены пропорционально
+            const legSize = Math.max(3, tileSize / 24);
+            const legOffsetY = otherPlayerRadius * 0.6;
+            const legOffsetX = otherPlayerRadius * 0.4;
+            this.graphics.fillStyle(0x000000, 1);
+            this.graphics.fillCircle(screenX - legOffsetX, screenY + legOffsetY, legSize);
+            this.graphics.fillCircle(screenX - legOffsetX * 0.3, screenY + legOffsetY, legSize);
+            this.graphics.fillCircle(screenX + legOffsetX * 0.3, screenY + legOffsetY, legSize);
+            this.graphics.fillCircle(screenX + legOffsetX, screenY + legOffsetY, legSize);
+          }
 
           // Отображаем имя игрока над ним
           const playerName = p.name || `Player-${p.id.slice(0, 4)}`;
@@ -1063,7 +1207,7 @@ export function PhaserGame(props: PhaserGameProps) {
         });
 
         // Удаляем тексты здоровья и имен для игроков, которых больше нет на экране
-        const visiblePlayerIds = new Set(otherPlayers.map(p => p.id));
+        // visiblePlayerIds уже создан выше
         for (const [playerId, textObj] of this.playerHealthTexts.entries()) {
           if (!visiblePlayerIds.has(playerId)) {
             textObj.destroy();

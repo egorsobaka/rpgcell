@@ -32,6 +32,7 @@ interface PlayerState {
   regeneration?: number;
   buildings?: Record<string, number>;
   totalFoodEaten?: number;
+  skin?: string;
 }
 
 interface ChatMessage {
@@ -69,6 +70,7 @@ interface LeaderboardEntry {
   level: number;
   playTime: number; // Время игры в секундах
   isOnline: boolean;
+  skin?: string; // URL скина персонажа
 }
 
 // Параметры клетки
@@ -991,6 +993,24 @@ function App() {
         return;
       }
       
+      // Проверяем, достаточно ли сытости для тапа
+      // Трата сытости: сила сбора - (сила + выносливость + защита)/3
+      const foodCost = Math.max(0, Math.ceil(me.collectionPower - (me.power + me.stamina + (me.defense ?? 0)) / 3));
+      const roundedSatiety = Math.round(me.satiety);
+      
+      if (roundedSatiety < foodCost) {
+        // Недостаточно сытости - показываем сообщение на карте
+        if (insufficientPowerCallbackRef.current) {
+          insufficientPowerCallbackRef.current(pos, 0); // Используем существующий callback для визуализации
+        }
+        // Показываем сообщение в модалке
+        setModalMessage({
+          title: 'Недостаточно сытости',
+          message: `Для тапа нужно ${foodCost} сытости, у вас ${roundedSatiety}. Восстановите сытость, используя ресурсы из инвентаря.`,
+        });
+        return;
+      }
+      
       // Все цветные клетки собираются через тапы
       socket.emit('color:cell:tap', { position: pos });
       // Запрашиваем прогресс
@@ -1046,6 +1066,7 @@ function App() {
           satiety: p.satiety,
           weight: p.weight,
           name: p.name,
+          skin: p.skin,
         })),
     [players, me],
   );
@@ -1234,6 +1255,33 @@ function App() {
                   <li key={entry.playerId}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {entry.skin ? (
+                          <img
+                            src={`http://localhost:3000${entry.skin}`}
+                            alt={entry.name}
+                            style={{
+                              width: '32px',
+                              height: '32px',
+                              borderRadius: '50%',
+                              objectFit: 'cover',
+                              border: '2px solid rgba(148, 163, 184, 0.3)',
+                            }}
+                            onError={(e) => {
+                              // Если изображение не загрузилось, скрываем его
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              width: '32px',
+                              height: '32px',
+                              borderRadius: '50%',
+                              backgroundColor: '#000000',
+                              border: '2px solid rgba(148, 163, 184, 0.3)',
+                            }}
+                          />
+                        )}
                         <span style={{ fontWeight: 'bold' }}>{entry.name}</span>
                         <span style={{ color: entry.isOnline ? '#22c55e' : '#94a3b8', fontSize: '12px' }}>
                           {entry.isOnline ? '🟢' : '⚫'}
@@ -1429,6 +1477,152 @@ function App() {
           <section className="sidebar-section">
             <h2>Параметры игрока</h2>
             <div className="player-stats-full">
+              <div className="stat-item">
+                <span className="stat-label">Скин:</span>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                  {me.skin ? (
+                    <img
+                      src={`http://localhost:3000${me.skin}`}
+                      alt="Скин персонажа"
+                      style={{
+                        width: '64px',
+                        height: '64px',
+                        objectFit: 'cover',
+                        borderRadius: '4px',
+                        border: '1px solid rgba(148, 163, 184, 0.3)',
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: '64px',
+                        height: '64px',
+                        backgroundColor: 'rgba(148, 163, 184, 0.2)',
+                        borderRadius: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '24px',
+                      }}
+                    >
+                      👤
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label
+                      style={{
+                        padding: '6px 12px',
+                        backgroundColor: '#3b82f6',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      📤 Загрузить скин
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file || !socket) return;
+
+                          // Проверяем размер файла (максимум 5MB)
+                          if (file.size > 5 * 1024 * 1024) {
+                            setModalMessage({ title: 'Ошибка', message: 'Размер файла не должен превышать 5MB' });
+                            return;
+                          }
+
+                          // Создаем FormData
+                          const formData = new FormData();
+                          formData.append('file', file);
+
+                          try {
+                            const response = await fetch(`http://localhost:3000/players/${me.id}/skin`, {
+                              method: 'POST',
+                              body: formData,
+                            });
+
+                            const result = await response.json();
+                            if (result.success) {
+                              // Обновляем состояние игрока
+                              const updatedPlayer = { ...me, skin: result.skinUrl };
+                              setPlayer(updatedPlayer);
+                              // Обновляем игрока в списке игроков
+                              setPlayers((prev) => {
+                                const updated = prev.map((p) => 
+                                  p.id === me.id ? updatedPlayer : p
+                                );
+                                return updated;
+                              });
+                              // Запрашиваем обновление состояния через WebSocket
+                              if (socket) {
+                                socket.emit('player:restore', { playerId: me.id });
+                              }
+                              setModalMessage({ title: 'Успех', message: 'Скин успешно загружен!' });
+                            } else {
+                              setModalMessage({ title: 'Ошибка', message: result.message || 'Не удалось загрузить скин' });
+                            }
+                          } catch (error: unknown) {
+                            const errorMessage = error instanceof Error ? error.message : 'Неизвестная ошибка';
+                            setModalMessage({ title: 'Ошибка', message: `Ошибка при загрузке: ${errorMessage}` });
+                          }
+                        }}
+                      />
+                    </label>
+                    {me.skin && (
+                      <button
+                        onClick={async () => {
+                          if (!socket) return;
+                          try {
+                            const response = await fetch(`http://localhost:3000/players/${me.id}/parameter/skin`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ value: null }),
+                            });
+                            const result = await response.json();
+                            if (result.success) {
+                              const updatedPlayer = { ...me, skin: undefined };
+                              setPlayer(updatedPlayer);
+                              // Обновляем игрока в списке игроков
+                              setPlayers((prev) => {
+                                const updated = prev.map((p) => 
+                                  p.id === me.id ? updatedPlayer : p
+                                );
+                                return updated;
+                              });
+                              // Запрашиваем обновление состояния через WebSocket
+                              if (socket) {
+                                socket.emit('player:restore', { playerId: me.id });
+                              }
+                              setModalMessage({ title: 'Успех', message: 'Скин удален' });
+                            } else {
+                              setModalMessage({ title: 'Ошибка', message: result.message || 'Не удалось удалить скин' });
+                            }
+                          } catch (error: unknown) {
+                            const errorMessage = error instanceof Error ? error.message : 'Неизвестная ошибка';
+                            setModalMessage({ title: 'Ошибка', message: `Ошибка: ${errorMessage}` });
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: '#ef4444',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                        }}
+                      >
+                        🗑️ Удалить
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
               <div className="stat-item">
                 <span className="stat-label">Имя:</span>
                 {isEditingName ? (
@@ -2233,13 +2427,44 @@ if (experience >= requiredExperience):
                         }
                       }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                          <div style={{ fontSize: '16px', color: '#fff', fontWeight: 'bold', marginBottom: '4px' }}>
-                            {character.name}
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#94a3b8' }}>
-                            Уровень: {character.level}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+                          {character.skin ? (
+                            <img
+                              src={`http://localhost:3000${character.skin}`}
+                              alt={character.name}
+                              style={{
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '50%',
+                                objectFit: 'cover',
+                                border: '2px solid rgba(148, 163, 184, 0.3)',
+                                flexShrink: 0,
+                              }}
+                              onError={(e) => {
+                                // Если изображение не загрузилось, скрываем его
+                                e.currentTarget.style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '50%',
+                                backgroundColor: '#000000',
+                                border: '2px solid rgba(148, 163, 184, 0.3)',
+                                flexShrink: 0,
+                              }}
+                            />
+                          )}
+                          <div>
+                            <div style={{ fontSize: '16px', color: '#fff', fontWeight: 'bold', marginBottom: '4px' }}>
+                              {character.name}
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                              Уровень: {character.level}
+                            </div>
                           </div>
                         </div>
                         {isCurrent && (
@@ -2406,6 +2631,7 @@ if (experience >= requiredExperience):
             playerWeight={me?.weight}
             playerCollectionPower={me?.collectionPower}
             playerName={me?.name}
+            playerSkin={me?.skin}
             selectedCell={selectedCell}
             setResourceCollectedCallback={(callback) => {
               resourceCollectedCallbackRef.current = callback;

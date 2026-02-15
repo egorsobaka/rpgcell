@@ -37,6 +37,7 @@ export interface PlayerState {
   buildings?: Record<string, number>; // Построенные постройки: название -> количество
   totalFoodEaten?: number; // Общее количество съеденной еды (для расчета увеличения веса)
   userId?: string; // ID пользователя (для привязки нескольких персонажей к одному пользователю)
+  skin?: string; // URL скина персонажа (путь к загруженному изображению)
 }
 
 export interface LeaderboardEntry {
@@ -46,6 +47,7 @@ export interface LeaderboardEntry {
   level: number;
   playTime: number; // Время игры в секундах
   isOnline: boolean;
+  skin?: string; // URL скина персонажа
 }
 
 export interface ChatMessage {

@@ -593,6 +593,7 @@ export class GameService {
       buildings: player.buildings || {},
       totalFoodEaten: Math.round(player.totalFoodEaten ?? 0),
       userId: player.userId,
+      skin: player.skin,
     };
   }
 
@@ -957,6 +958,7 @@ export class GameService {
       'colorLevels',
       'buildings',
       'userId',
+      'skin',
     ];
 
     if (!allowedParameters.includes(parameter)) {
@@ -1375,6 +1377,7 @@ export class GameService {
           level: p.level || 1,
           playTime,
           isOnline: onlinePlayers ? onlinePlayers.has(p.id) : false,
+          skin: p.skin,
         };
       })
       .sort((a, b) => b.totalCollected - a.totalCollected)
@@ -1582,6 +1585,28 @@ export class GameService {
       };
     }
 
+    // Проверяем, достаточно ли сытости для тапа
+    // Трата сытости: сила сбора - (сила + выносливость + защита)/3
+    const foodCost = Math.max(0, Math.ceil(player.collectionPower - (player.power + player.stamina + (player.defense ?? 0)) / 3));
+    const roundedSatiety = Math.round(player.satiety);
+    
+    if (roundedSatiety < foodCost) {
+      // Недостаточно сытости - возвращаем текущее состояние
+      const key = `${pos.x}:${pos.y}`;
+      const health = await this.getOrInitCellHealth(pos);
+      const cell = await this.cellModel.findOne({ key }).exec();
+      const currentProgress = cell?.playerProgress?.[clientId] ?? 0;
+      return {
+        collected: false,
+        progress: currentProgress,
+        required: health,
+        color: cellColor,
+        health: health,
+        tapAmount: 0, // Не тапали, так как недостаточно сытости
+        insufficientInventory: false, // Проблема не в инвентаре, а в сытости
+      };
+    }
+
     const key = `${pos.x}:${pos.y}`;
     
     // Получаем или создаем клетку с использованием upsert для избежания race condition
@@ -1610,9 +1635,8 @@ export class GameService {
       await cell.save();
     }
     
-    // Тратим сытость за тап: сила сбора - (сила + выносливость + защита)/3
-    const foodCost = Math.max(0, Math.ceil(player.collectionPower - (player.power + player.stamina + (player.defense ?? 0)) / 3));
-    player.satiety = Math.max(0, player.satiety - foodCost);
+    // Тратим сытость за тап
+    player.satiety = Math.max(0, Math.round(player.satiety - foodCost));
     
     // Увеличиваем счетчик съеденной еды
     player.totalFoodEaten = Math.round((player.totalFoodEaten ?? 0) + foodCost);

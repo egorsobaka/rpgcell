@@ -82,6 +82,10 @@ export class Player {
   // ID пользователя (для привязки нескольких персонажей к одному пользователю)
   @Prop({ required: false, index: true })
   userId?: string;
+
+  // URL скина персонажа (путь к загруженному изображению)
+  @Prop({ required: false })
+  skin?: string;
 }
 
 export const PlayerSchema = SchemaFactory.createForClass(Player);
