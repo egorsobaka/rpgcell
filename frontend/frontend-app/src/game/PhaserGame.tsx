@@ -1028,7 +1028,7 @@ export function PhaserGame(props: PhaserGameProps) {
           const showHealth = attackTime !== undefined && (currentTime - attackTime) < 3000; // 3 секунды
           
           if (showHealth && p.satiety !== undefined && p.weight !== undefined) {
-            const healthText = `${p.satiety}/${p.weight}`;
+            const healthText = `${Math.round(p.satiety)}/${p.weight}`;
             let healthTextObj = this.playerHealthTexts.get(p.id);
             
             if (!healthTextObj) {
@@ -1111,7 +1111,7 @@ export function PhaserGame(props: PhaserGameProps) {
         const showMainHealth = mainAttackTime !== undefined && (mainHealthCheckTime - mainAttackTime) < 3000;
         
         if (showMainHealth && playerPosition && playerSatiety !== undefined && playerWeight !== undefined) {
-          const healthText = `${playerSatiety}/${playerWeight}`;
+          const healthText = `${Math.round(playerSatiety)}/${playerWeight}`;
           let healthTextObj = this.playerHealthTexts.get('main');
           
           if (!healthTextObj) {

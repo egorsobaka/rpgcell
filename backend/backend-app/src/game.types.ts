@@ -35,6 +35,7 @@ export interface PlayerState {
   luck: number; // Удача - влияет на количество собираемых ресурсов: bonus = floor(luck / 5) (изначально 0, улучшается +1)
   regeneration: number; // Регенерация - восстанавливает сытость каждые 10 секунд (изначально 0, улучшается +0.5)
   buildings?: Record<string, number>; // Построенные постройки: название -> количество
+  totalFoodEaten?: number; // Общее количество съеденной еды (для расчета увеличения веса)
 }
 
 export interface LeaderboardEntry {

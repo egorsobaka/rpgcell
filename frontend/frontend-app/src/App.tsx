@@ -31,6 +31,7 @@ interface PlayerState {
   luck?: number;
   regeneration?: number;
   buildings?: Record<string, number>;
+  totalFoodEaten?: number;
 }
 
 interface ChatMessage {
@@ -891,9 +892,11 @@ function App() {
       const cellPower = cellParamsForPos?.power ?? getCellPower(cellColor);
       const multiplier = (me.power / 2) + (me.stamina / 2) - (me.defense ?? 0);
       const safeMultiplier = Math.max(0.1, multiplier);
-      const requiredPower = me.collectionPower * safeMultiplier;
+      // Максимальная сила клетки, которую может собрать игрок, не должна быть меньше 1
+      const requiredPower = Math.max(1, me.collectionPower * safeMultiplier);
       
-      if (cellPower >= requiredPower) {
+      // Клетку можно собирать, если её сила меньше или равна максимальной силе игрока
+      if (cellPower > requiredPower) {
         // Недостаточно силы сбора - показываем сообщение на карте
         if (insufficientPowerCallbackRef.current) {
           insufficientPowerCallbackRef.current(pos, cellPower);
@@ -1453,12 +1456,87 @@ function App() {
                     }}
                   />
                 </div>
-                <span className="stat-value">{me.satiety}/{me.weight}</span>
+                <span className="stat-value">{Math.round(me.satiety)}/{me.weight}</span>
                 <span
                   className="help-icon"
                   onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
                     setHelpTooltip({ param: 'satiety', x: rect.left, y: rect.top + rect.height });
+                  }}
+                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                  title="Показать описание"
+                >
+                  ❓
+                </span>
+              </div>
+              {(() => {
+                const foodThreshold = Math.round(me.weight * me.level);
+                const totalFoodEaten = Math.round(me.totalFoodEaten ?? 0);
+                const foodProgress = foodThreshold > 0 ? Math.min(100, (totalFoodEaten / foodThreshold) * 100) : 0;
+                return foodThreshold > 0 ? (
+                  <div className="stat-item">
+                    <span className="stat-label">Набор веса:</span>
+                    <div className="stat-bar">
+                      <div
+                        className="stat-bar-fill"
+                        style={{
+                          width: `${foodProgress}%`,
+                          backgroundColor:
+                            foodProgress >= 100
+                              ? '#22c55e'
+                              : foodProgress > 50
+                                ? '#f59e0b'
+                                : '#60a5fa',
+                        }}
+                      />
+                    </div>
+                    <span className="stat-value">{totalFoodEaten}/{foodThreshold}</span>
+                    <span
+                      className="help-icon"
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setHelpTooltip({ param: 'totalFoodEaten', x: rect.left, y: rect.top + rect.height });
+                      }}
+                      style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
+                      title="Показать описание"
+                    >
+                      ❓
+                    </span>
+                  </div>
+                ) : null;
+              })()}
+              <div className="stat-item">
+                <span className="stat-label">Опыт до след. уровня:</span>
+                {(() => {
+                  const requiredExp = Math.ceil(255 + 255 * me.level * 0.1);
+                  const expProgress = requiredExp > 0 ? Math.min(100, (me.experience / requiredExp) * 100) : 0;
+                  return (
+                    <>
+                      <div className="stat-bar">
+                        <div
+                          className="stat-bar-fill"
+                          style={{
+                            width: `${expProgress}%`,
+                            backgroundColor:
+                              expProgress >= 100
+                                ? '#22c55e'
+                                : expProgress > 50
+                                  ? '#f59e0b'
+                                  : '#60a5fa',
+                          }}
+                        />
+                      </div>
+                      <span className="stat-value">
+                        {me.experience}/{requiredExp}
+                      </span>
+                    </>
+                  );
+                })()}
+                <span
+                  className="help-icon"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHelpTooltip({ param: 'experience-to-next', x: rect.left, y: rect.top + rect.height });
                   }}
                   style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
                   title="Показать описание"
@@ -1481,6 +1559,19 @@ function App() {
                   ❓
                 </span>
               </div>
+              {(() => {
+                const defense = me.defense ?? 0;
+                const minStat = Math.min(me.collectionPower, me.power, me.stamina, defense);
+                const sumStats = me.collectionPower + me.power + me.stamina + defense;
+                const weightIncrease = me.weight * 0.1 * (minStat / Math.max(1, sumStats));
+                const foodThreshold = Math.round(me.weight * me.level);
+                return foodThreshold > 0 ? (
+                  <div className="stat-item">
+                    <span className="stat-label">Инкремент веса:</span>
+                    <span className="stat-value">{Math.ceil(weightIncrease)}</span>
+                  </div>
+                ) : null;
+              })()}
               <div className="stat-item">
                 <span className="stat-label">Выносливость:</span>
                 <span className="stat-value">{me.stamina}</span>
@@ -1560,8 +1651,9 @@ function App() {
                   {(() => {
                     const multiplier = (me.power / 2) + (me.stamina / 2) - (me.defense ?? 0);
                     const safeMultiplier = Math.max(0.1, multiplier);
-                    const maxCellPower = Math.floor(me.collectionPower * safeMultiplier - 1);
-                    return maxCellPower;
+                    // Максимальная сила клетки, которую может собрать игрок, не должна быть меньше 1
+                    const maxCellPower = Math.max(1, me.collectionPower * safeMultiplier);
+                    return Math.floor(maxCellPower);
                   })()}
                 </span>
                 <span
@@ -1717,23 +1809,6 @@ function App() {
                   ❓
                 </span>
               </div>
-              <div className="stat-item">
-                <span className="stat-label">Опыт до след. уровня:</span>
-                <span className="stat-value">
-                  {me.experience}/{me.level * 255}
-                </span>
-                <span
-                  className="help-icon"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setHelpTooltip({ param: 'experience-to-next', x: rect.left, y: rect.top + rect.height });
-                  }}
-                  style={{ cursor: 'pointer', marginLeft: '4px', color: '#60a5fa', fontSize: '12px' }}
-                  title="Показать описание"
-                >
-                  ❓
-                </span>
-              </div>
               {me.availableUpgrades > 0 && (
                 <div className="stat-item upgrades-available">
                   <span className="stat-label" style={{ color: '#ffd700' }}>
@@ -1807,7 +1882,7 @@ function App() {
                   <li>Тип: число, минимум 0</li>
                   <li>Начальное значение: 0</li>
                   <li>Получается при использовании ресурсов: experience += blueComponent (синий компонент HEX цвета)</li>
-                  <li>Требуется для повышения уровня: requiredExperience = level * 255</li>
+                  <li>Требуется для повышения уровня: requiredExperience = начальный опыт + начальный опыт * level * 0.1 (начальный опыт = 255)</li>
                 </ul>
               </div>
 
@@ -1827,7 +1902,7 @@ function App() {
                 <ul style={{ marginTop: '4px', paddingLeft: '20px' }}>
                   <li>Тип: целое число, минимум 1</li>
                   <li>Начальное значение: 1</li>
-                  <li>Повышается при накоплении опыта: requiredExperience = level * 255</li>
+                  <li>Повышается при накоплении опыта: requiredExperience = начальный опыт + начальный опыт * level * 0.1 (начальный опыт = 255)</li>
                   <li>При повышении уровня: level += 1, availableUpgrades += 1</li>
                 </ul>
               </div>
@@ -1919,7 +1994,8 @@ maxWeight = (weight / 2) + (weight / 2 * stamina / 10)`}</pre>
 
               <div style={{ marginBottom: '12px', backgroundColor: 'rgba(30, 41, 59, 0.5)', padding: '8px', borderRadius: '6px' }}>
                 <strong style={{ color: '#22c55e' }}>Опыт для уровня:</strong>
-                <pre style={{ marginTop: '4px', fontSize: '11px', overflowX: 'auto' }}>{`requiredExperience = level * 255
+                <pre style={{ marginTop: '4px', fontSize: '11px', overflowX: 'auto' }}>{`initialExp = 255
+requiredExperience = Math.ceil(initialExp + initialExp * level * 0.1)
 if (experience >= requiredExperience):
   experience -= requiredExperience
   level += 1
@@ -2088,7 +2164,7 @@ if (experience >= requiredExperience):
                 title={me.availableUpgrades > 0 ? `Доступно улучшений: ${me.availableUpgrades}. Нажмите, чтобы открыть` : 'Опыт'}
               >
                 <span className="stat-icon-emoji">⭐</span>
-                <span className="stat-icon-value">{me.experience}/{me.level * 255}</span>
+                <span className="stat-icon-value">{me.experience}/{Math.ceil(255 + 255 * me.level * 0.1)}</span>
               </div>
               <div 
                 className={`stat-icon ${me.availableUpgrades > 0 ? 'upgradeable' : ''}`} 

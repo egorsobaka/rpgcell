@@ -36,7 +36,7 @@ export class Player {
   @Prop({ default: 1 })
   stamina: number;
 
-  @Prop({ default: 10 })
+  @Prop({ default: 1 })
   collectionPower: number;
 
   @Prop({ default: 0 })
@@ -74,6 +74,10 @@ export class Player {
   // Построенные постройки: название -> количество
   @Prop({ type: Object, default: {} })
   buildings: Record<string, number>;
+
+  // Общее количество съеденной еды (для расчета увеличения веса)
+  @Prop({ default: 0 })
+  totalFoodEaten: number;
 }
 
 export const PlayerSchema = SchemaFactory.createForClass(Player);

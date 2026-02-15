@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { GameGateway } from './game.gateway';
@@ -12,6 +13,7 @@ import { Building, BuildingSchema } from './schemas/building.schema';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     MongooseModule.forRoot(
       process.env.MONGODB_URI || 'mongodb://admin:password@localhost:27017/rpg_game?authSource=admin',
     ),

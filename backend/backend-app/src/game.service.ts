@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { randomUUID } from 'crypto';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   CellColor,
   CellPosition,
@@ -146,7 +147,7 @@ interface CellParams {
 }
 
 // Возможные значения силы клетки (с шагом 8, от 8 до 248)
-const POWER_VALUES: number[] = [];
+const POWER_VALUES: number[] = [1]; // Минимальная сила = 1
 for (let i = 1; i <= 31; i++) {
   POWER_VALUES.push(i * 8);
 }
@@ -186,6 +187,85 @@ function weightedRandomPower(seed: number): number {
   return POWER_VALUES[0];
 }
 
+// Генерация параметров клетки с минимальной силой
+function generateCellParamsWithMinPower(x: number, y: number, minPower: number): CellParams {
+  // Диагональ вида x + y = const (идет сверху-слева вниз-вправо)
+  const diagonalSum = x + y;
+  
+  // Разбиваем диагональ на сегменты длиной максимум 10 клеток
+  const segmentIndex = Math.floor(diagonalSum / 10);
+  
+  // Генерируем ширину линии для этого сегмента (от 3)
+  const widthSeed = (segmentIndex * 73856093) ^ (segmentIndex * 19349663);
+  const lineWidth = 3 + (Math.abs(widthSeed) % 4); // 3-6 клеток шириной
+  
+  // Определяем перпендикулярную координату для создания полос шириной lineWidth
+  // Используем x - y для создания перпендикулярных полос
+  const perpendicular = x - y;
+  const stripIndex = Math.floor(perpendicular / lineWidth);
+  
+  // Генерируем seed для параметров
+  const paramSeed = (segmentIndex * 73856093) ^ (stripIndex * 19349663);
+  
+  // Генерируем параметры в заданных интервалах
+  const foodSeed = Math.abs(paramSeed * 73856093) % 201; // 0-200 -> 30-230
+  const buildingSeed = Math.abs(paramSeed * 19349663) % 201; // 0-200 -> 30-230
+  const powerSeed = (paramSeed * 48273629) ^ (paramSeed * 73856093);
+  
+  const food = 30 + foodSeed;
+  const building = 30 + buildingSeed;
+  
+  // Сила клетки: выбираем из POWER_VALUES, но не меньше minPower
+  // Минимальная сила должна быть не меньше maxLevel (минимальная сила игроков)
+  const actualMinPower = Math.max(1, minPower);
+  
+  // Находим ближайшее значение из POWER_VALUES, которое >= actualMinPower
+  const validPowers = POWER_VALUES.filter(p => p >= actualMinPower);
+  let power: number;
+  if (validPowers.length > 0) {
+    // Выбираем случайную силу из валидных значений (>= actualMinPower)
+    // Используем взвешенную выборку, но только среди валидных значений
+    // Применяем веса для более вероятного выбора меньших значений
+    const validWeights: number[] = [];
+    let totalWeight = 0;
+    for (const p of validPowers) {
+      const weight = 1 / Math.pow(p, 1.5);
+      validWeights.push(weight);
+      totalWeight += weight;
+    }
+    
+    const normalized = (Math.abs(powerSeed) % 1000000) / 1000000;
+    const randomValue = normalized * totalWeight;
+    
+    let cumulativeWeight = 0;
+    power = validPowers[0]; // Инициализируем первым валидным значением
+    for (let i = 0; i < validPowers.length; i++) {
+      cumulativeWeight += validWeights[i];
+      if (randomValue <= cumulativeWeight) {
+        power = validPowers[i];
+        break;
+      }
+    }
+  } else {
+    // Если actualMinPower больше максимального значения, используем максимальное
+    power = POWER_VALUES[POWER_VALUES.length - 1];
+  }
+  
+  // Генерируем опыт с учетом силы
+  const powerFactor = (power - 1) / (248 - 1);
+  const maxExperience = Math.round(20 + powerFactor * (230 - 20));
+  const experienceRange = maxExperience - 20 + 1;
+  
+  const experienceSeed = Math.abs(paramSeed * 83492791) % 1000;
+  const randomValue = experienceSeed / 1000;
+  
+  const exponent = 1 + (1 - powerFactor) * 2;
+  const adjustedValue = Math.pow(randomValue, exponent);
+  const experience = 20 + Math.floor(adjustedValue * experienceRange);
+  
+  return { food, building, experience, power };
+}
+
 // Генерация параметров клетки с шагом 8
 function generateCellParams(x: number, y: number): CellParams {
   // Диагональ вида x + y = const (идет сверху-слева вниз-вправо)
@@ -218,12 +298,12 @@ function generateCellParams(x: number, y: number): CellParams {
   const food = 30 + foodSeed;
   const building = 30 + buildingSeed;
   
-  // Сила клетки от 8 до 248 с шагом 8, взвешенная выборка (меньшие значения более вероятны)
+  // Сила клетки от 1 до 248 (1, 8, 16, 24, ...), взвешенная выборка (меньшие значения более вероятны)
   const power = weightedRandomPower(powerSeed);
   
   // Генерируем опыт с учетом силы: чем меньше сила, тем меньше вероятность большого опыта
-  // Максимальный опыт линейно зависит от силы: при power=8 -> maxExperience=20, при power=248 -> maxExperience=230
-  const powerFactor = (power - 8) / (248 - 8); // Нормализуем power к [0, 1]
+  // Максимальный опыт линейно зависит от силы: при power=1 -> maxExperience=20, при power=248 -> maxExperience=230
+  const powerFactor = (power - 1) / (248 - 1); // Нормализуем power к [0, 1]
   const maxExperience = Math.round(20 + powerFactor * (230 - 20)); // 20 до 230
   const experienceRange = maxExperience - 20 + 1; // Количество возможных значений опыта
   
@@ -232,7 +312,7 @@ function generateCellParams(x: number, y: number): CellParams {
   const randomValue = experienceSeed / 1000; // 0 до 1
   
   // Применяем степенную функцию: чем меньше сила, тем больше "сжатие" к меньшим значениям
-  // При powerFactor=0 (сила=8): степень=3, сильное сжатие к малым значениям
+  // При powerFactor=0 (сила=1): степень=3, сильное сжатие к малым значениям
   // При powerFactor=1 (сила=248): степень=1, равномерное распределение
   const exponent = 1 + (1 - powerFactor) * 2; // Степень от 1 до 3
   const adjustedValue = Math.pow(randomValue, exponent);
@@ -354,6 +434,12 @@ export class GameService {
     if (!player) return null;
     
     const playerState = this.playerToState(player);
+    // Проверяем увеличение веса при загрузке игрока (на случай, если порог уже достигнут)
+    this.checkWeightIncrease(playerState);
+    // Если вес изменился, сохраняем изменения
+    if (playerState.weight !== (player.weight ?? 255)) {
+      await this.savePlayer(playerState);
+    }
     this.playersCache.set(playerId, playerState);
     return playerState;
   }
@@ -367,7 +453,7 @@ export class GameService {
     let player = await this.playerModel.findOne({ id: playerId }).lean().exec();
     
     // Миграция: если у существующего игрока нет новых полей, инициализируем их
-    if (player && (player.health === undefined || player.maxHealth === undefined || player.defense === undefined || player.luck === undefined || player.regeneration === undefined)) {
+    if (player && (player.health === undefined || player.maxHealth === undefined || player.defense === undefined || player.luck === undefined || player.regeneration === undefined || player.totalFoodEaten === undefined)) {
       await this.playerModel.findOneAndUpdate(
         { id: playerId },
         {
@@ -377,6 +463,7 @@ export class GameService {
             defense: player.defense ?? 0,
             luck: player.luck ?? 0,
             regeneration: player.regeneration ?? 0,
+            totalFoodEaten: player.totalFoodEaten ?? 0,
           },
         },
       );
@@ -397,7 +484,7 @@ export class GameService {
         satiety: 255,
         weight: 255,
         stamina: 1,
-        collectionPower: 10,
+        collectionPower: 1,
         experience: 0,
         power: 1,
         level: 1,
@@ -407,6 +494,7 @@ export class GameService {
         defense: 0,
         luck: 0,
         regeneration: 0,
+        totalFoodEaten: 0,
       });
       await newPlayer.save();
       player = newPlayer.toObject();
@@ -432,6 +520,12 @@ export class GameService {
     }
     
     const playerState = this.playerToState(player);
+    // Проверяем увеличение веса при загрузке игрока (на случай, если порог уже достигнут)
+    this.checkWeightIncrease(playerState);
+    // Если вес изменился, сохраняем изменения
+    if (playerState.weight !== (player.weight ?? 255)) {
+      await this.savePlayer(playerState);
+    }
     this.playersCache.set(playerId, playerState);
     return playerState;
   }
@@ -451,10 +545,10 @@ export class GameService {
       inventory: player.inventory || {},
       totalCollected: player.totalCollected || 0,
       colorLevels: player.colorLevels || {},
-      satiety: player.satiety ?? 255,
+      satiety: Math.round(player.satiety ?? 255),
       weight: player.weight ?? 255,
       stamina: player.stamina ?? 1,
-      collectionPower: player.collectionPower ?? 10,
+      collectionPower: player.collectionPower ?? 1,
       experience: player.experience ?? 0,
       power: player.power ?? 1,
       level: player.level ?? 1,
@@ -465,6 +559,7 @@ export class GameService {
       luck: player.luck ?? 0,
       regeneration: player.regeneration ?? 0,
       buildings: player.buildings || {},
+      totalFoodEaten: Math.round(player.totalFoodEaten ?? 0),
     };
   }
 
@@ -479,7 +574,7 @@ export class GameService {
           inventory: playerState.inventory,
           totalCollected: playerState.totalCollected,
           colorLevels: playerState.colorLevels,
-        satiety: playerState.satiety,
+        satiety: Math.round(playerState.satiety),
         weight: playerState.weight,
         stamina: playerState.stamina,
         collectionPower: playerState.collectionPower,
@@ -492,6 +587,8 @@ export class GameService {
         defense: playerState.defense,
         luck: playerState.luck,
         regeneration: playerState.regeneration,
+        buildings: playerState.buildings || {},
+        totalFoodEaten: Math.round(playerState.totalFoodEaten ?? 0),
         },
       },
       { upsert: true },
@@ -708,7 +805,13 @@ export class GameService {
         satietyRestored = greenComponent;
       }
       // Восстанавливаем сытость (максимум weight)
-      player.satiety = Math.min(player.weight, player.satiety + satietyRestored);
+      player.satiety = Math.round(Math.min(player.weight, player.satiety + satietyRestored));
+      
+      // Увеличиваем счетчик съеденной еды
+      player.totalFoodEaten = Math.round((player.totalFoodEaten ?? 0) + satietyRestored);
+      
+      // Проверяем увеличение веса при достижении порога сытости
+      this.checkWeightIncrease(player);
     } else if (useType === 'experience') {
       // Вычисляем опыт на основе experience параметра или синего компонента
       if (cellParams) {
@@ -743,11 +846,31 @@ export class GameService {
 
   // Проверка достижения нового уровня
   private checkLevelUp(player: PlayerState): void {
-    const requiredExp = player.level * 255;
+    const initialExp = 255; // Начальный опыт
+    const requiredExp = Math.ceil(initialExp + initialExp * player.level * 0.1);
     while (player.experience >= requiredExp) {
       player.experience -= requiredExp;
       player.level += 1;
       player.availableUpgrades += 1;
+    }
+  }
+
+  // Проверка и увеличение веса при достижении порога съеденной еды
+  private checkWeightIncrease(player: PlayerState): void {
+    // Порог съеденной еды для увеличения веса: weight * level
+    const foodThreshold = Math.round(player.weight * player.level);
+    
+    // Если количество съеденной еды достигло или превысило порог
+    if ((player.totalFoodEaten ?? 0) >= foodThreshold) {
+      // Увеличиваем вес на: weight * 0.1 * (min(collectionPower, power, stamina, defense) / (collectionPower + power + stamina + defense))
+      const defense = player.defense ?? 0;
+      const minStat = Math.min(player.collectionPower, player.power, player.stamina, defense);
+      const sumStats = player.collectionPower + player.power + player.stamina + defense;
+      const weightIncrease = player.weight * 0.1 * (minStat / Math.max(1, sumStats)); // Math.max(1, ...) чтобы избежать деления на 0
+      player.weight = Math.ceil(player.weight + weightIncrease);
+      
+      // Сбрасываем счетчик съеденной еды
+      player.totalFoodEaten = 0;
     }
   }
 
@@ -874,7 +997,7 @@ export class GameService {
     }
     
     // Тратим сытость на ход
-    player.satiety = Math.max(0, player.satiety - moveCost);
+    player.satiety = Math.max(0, Math.round(player.satiety - moveCost));
     
     const oldKey = `${player.position.x}:${player.position.y}`;
     player.position = position;
@@ -1279,7 +1402,10 @@ export class GameService {
     const multiplier = (player.power / 2) + (player.stamina / 2) - (player.defense ?? 0);
     // Защита от отрицательного или слишком маленького множителя
     const safeMultiplier = Math.max(0.1, multiplier);
-    if (cellPower >= player.collectionPower * safeMultiplier) {
+    // Максимальная сила клетки, которую может собрать игрок, не должна быть меньше 1
+    const maxCellPower = Math.max(1, player.collectionPower * safeMultiplier);
+    // Клетку можно собирать, если её сила меньше или равна максимальной силе игрока
+    if (cellPower > maxCellPower) {
       // Недостаточно силы сбора - возвращаем текущее состояние
       const key = `${pos.x}:${pos.y}`;
       const health = await this.getOrInitCellHealth(pos);
@@ -1291,8 +1417,8 @@ export class GameService {
         required: health,
         color: cellColor,
         health: health,
-        tapAmount: 0, // Не тапали, так как нет места в инвентаре
-        insufficientInventory: true, // Флаг, что проблема в нехватке места
+        tapAmount: 0, // Не тапали, так как недостаточно силы сбора
+        insufficientInventory: false, // Проблема не в инвентаре, а в силе сбора
       };
     }
 
@@ -1349,13 +1475,37 @@ export class GameService {
       await cell.save();
     }
     
+    // Тратим сытость за тап: сила сбора - (сила + выносливость + защита)/3
+    const foodCost = Math.max(0, Math.ceil(player.collectionPower - (player.power + player.stamina + (player.defense ?? 0)) / 3));
+    player.satiety = Math.max(0, player.satiety - foodCost);
+    
+    // Увеличиваем счетчик съеденной еды
+    player.totalFoodEaten = Math.round((player.totalFoodEaten ?? 0) + foodCost);
+    
+    // Проверяем увеличение веса при достижении порога сытости
+    this.checkWeightIncrease(player);
+    
     // Увеличиваем прогресс игрока на силу сбора
     const tapAmount = player.collectionPower; // Количество натапанного за раз
     const currentProgress = (cell.playerProgress[clientId] ?? 0) + tapAmount;
-    cell.playerProgress[clientId] = currentProgress;
     
     // Уменьшаем жизни клетки на силу сбора
-    cell.health -= tapAmount;
+    const newHealth = (cell.health ?? health) - tapAmount;
+    
+    // Обновляем клетку в базе данных с использованием $set для правильного сохранения вложенных объектов
+    await this.cellModel.findOneAndUpdate(
+      { key },
+      {
+        $set: {
+          [`playerProgress.${clientId}`]: currentProgress,
+          health: newHealth,
+        },
+      },
+    ).exec();
+    
+    // Обновляем локальный объект для дальнейшего использования
+    cell.playerProgress[clientId] = currentProgress;
+    cell.health = newHealth;
     
     let collectedAmount: number | undefined;
     let winnerId: string | undefined;
@@ -1443,29 +1593,51 @@ export class GameService {
       }
       
       // Клетка становится белой и остается белой навсегда
+      // Обновляем клетку в базе данных
+      await this.cellModel.findOneAndUpdate(
+        { key },
+        {
+          $set: {
+            color: '#ffffff',
+            health: undefined,
+            playerProgress: {},
+            food: 0,
+            building: 0,
+            experience: 0,
+            power: 1,
+            constructionPoints: 0,
+          },
+        },
+      ).exec();
+      
+      // Обновляем локальный объект
       cell.color = '#ffffff';
       cell.health = undefined;
       cell.playerProgress = {};
-      // Устанавливаем параметры белой клетки (нельзя собирать)
       cell.food = 0;
       cell.building = 0;
       cell.experience = 0;
       cell.power = 1;
       cell.constructionPoints = 0;
+    } else {
+      // Если клетка не собрана, изменения уже сохранены через findOneAndUpdate выше
+      // Не нужно вызывать save() еще раз, так как это может привести к race condition
     }
     
-    // Сохраняем изменения клетки
-    await cell.save();
+    // Сохраняем изменения игрока (сытость, вес, счетчик съеденной еды)
+    await this.savePlayer(player);
     
+    // Возвращаем результат с актуальными значениями
     return {
       collected: isCollected,
       progress: currentProgress,
-      required: cell.health ?? 0,
-      color: cellColor,
-      health: cell.health ?? 0,
+      required: isCollected ? 0 : (cell.health ?? 0),
+      color: isCollected ? '#ffffff' : cellColor,
+      health: isCollected ? 0 : (cell.health ?? 0),
       winnerId,
       collectedAmount,
       tapAmount, // Количество натапанного за раз
+      insufficientInventory: false, // По умолчанию места достаточно
     };
   }
 
@@ -1515,7 +1687,7 @@ export class GameService {
     const damage = attacker.power;
 
     // Отнимаем сытость у цели
-    target.satiety = Math.max(0, target.satiety - damage);
+    target.satiety = Math.max(0, Math.round(target.satiety - damage));
 
     // Сохраняем изменения цели
     await this.savePlayer(target);
@@ -1844,6 +2016,66 @@ export class GameService {
     await this.savePlayer(player);
 
     return { success: true, affectedCells };
+  }
+
+  // Регенерация белых клеток каждую минуту
+  @Cron(CronExpression.EVERY_MINUTE)
+  async regenerateWhiteCells(): Promise<void> {
+    try {
+      // Находим максимальный уровень игроков
+      const players = await this.playerModel.find().lean().exec();
+      const maxLevel = players.length > 0 
+        ? Math.max(...players.map(p => p.level ?? 1))
+        : 1;
+      
+      // Находим все белые клетки
+      const whiteCells = await this.cellModel.find({ color: '#ffffff' }).lean().exec();
+      
+      // Регенерируем клетки с вероятностью 0.5
+      const cellsToRegenerate: Array<{ key: string; position: CellPosition }> = [];
+      for (const cell of whiteCells) {
+        if (Math.random() < 0.5) {
+          cellsToRegenerate.push({
+            key: cell.key,
+            position: cell.position,
+          });
+        }
+      }
+      
+      // Генерируем новые параметры для выбранных клеток
+      for (const cellInfo of cellsToRegenerate) {
+        const params = generateCellParamsWithMinPower(
+          cellInfo.position.x,
+          cellInfo.position.y,
+          maxLevel,
+        );
+        const color = paramsToColor(params, 0);
+        const health = params.power * params.experience;
+        
+        await this.cellModel.findOneAndUpdate(
+          { key: cellInfo.key },
+          {
+            $set: {
+              color,
+              food: params.food,
+              building: params.building,
+              experience: params.experience,
+              power: params.power,
+              health,
+              playerProgress: {},
+              constructionPoints: 0,
+              constructionType: undefined,
+              buildingName: undefined,
+              buildingId: undefined,
+            },
+          },
+        ).exec();
+      }
+      
+      console.log(`Регенерировано ${cellsToRegenerate.length} клеток из ${whiteCells.length} белых клеток (макс. уровень: ${maxLevel})`);
+    } catch (error) {
+      console.error('Ошибка при регенерации клеток:', error);
+    }
   }
 }
 
