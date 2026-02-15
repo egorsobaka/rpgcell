@@ -36,6 +36,7 @@ export interface PlayerState {
   regeneration: number; // Регенерация - восстанавливает сытость каждые 10 секунд (изначально 0, улучшается +0.5)
   buildings?: Record<string, number>; // Построенные постройки: название -> количество
   totalFoodEaten?: number; // Общее количество съеденной еды (для расчета увеличения веса)
+  userId?: string; // ID пользователя (для привязки нескольких персонажей к одному пользователю)
 }
 
 export interface LeaderboardEntry {

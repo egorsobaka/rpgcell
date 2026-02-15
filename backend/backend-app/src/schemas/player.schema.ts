@@ -78,6 +78,10 @@ export class Player {
   // Общее количество съеденной еды (для расчета увеличения веса)
   @Prop({ default: 0 })
   totalFoodEaten: number;
+
+  // ID пользователя (для привязки нескольких персонажей к одному пользователю)
+  @Prop({ required: false, index: true })
+  userId?: string;
 }
 
 export const PlayerSchema = SchemaFactory.createForClass(Player);

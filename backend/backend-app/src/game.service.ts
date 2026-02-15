@@ -531,9 +531,41 @@ export class GameService {
   }
 
   // Создать нового игрока с новым постоянным UUID
-  async createNewPlayer(): Promise<PlayerState> {
+  async createNewPlayer(userId?: string): Promise<PlayerState> {
     const newPlayerId = randomUUID();
-    return await this.getOrCreatePlayer(newPlayerId);
+    const player = await this.getOrCreatePlayer(newPlayerId);
+    // Если передан userId, привязываем персонажа к пользователю
+    if (userId && player) {
+      await this.playerModel.findOneAndUpdate(
+        { id: newPlayerId },
+        { $set: { userId } },
+      ).exec();
+      player.userId = userId;
+    }
+    return player;
+  }
+
+  // Получить всех персонажей пользователя
+  async getPlayerCharacters(userId: string): Promise<PlayerState[]> {
+    const players = await this.playerModel.find({ userId }).lean().exec();
+    return players.map(p => this.playerToState(p));
+  }
+
+  // Переключиться на другого персонажа
+  async switchCharacter(userId: string, characterId: string): Promise<PlayerState | null> {
+    // Проверяем, что персонаж принадлежит пользователю
+    const player = await this.playerModel.findOne({ id: characterId, userId }).lean().exec();
+    if (!player) {
+      return null;
+    }
+    const playerState = this.playerToState(player);
+    // Проверяем увеличение веса при загрузке
+    this.checkWeightIncrease(playerState);
+    if (playerState.weight !== (player.weight ?? 255)) {
+      await this.savePlayer(playerState);
+    }
+    this.playersCache.set(characterId, playerState);
+    return playerState;
   }
 
   private playerToState(player: any): PlayerState {
@@ -560,6 +592,7 @@ export class GameService {
       regeneration: player.regeneration ?? 0,
       buildings: player.buildings || {},
       totalFoodEaten: Math.round(player.totalFoodEaten ?? 0),
+      userId: player.userId,
     };
   }
 
@@ -875,6 +908,108 @@ export class GameService {
   }
 
   // Изменить имя игрока
+  async updatePlayerWeight(playerId: string, newWeight: number): Promise<void> {
+    await this.playerModel.findOneAndUpdate(
+      { id: playerId },
+      { $set: { weight: newWeight } },
+    ).exec();
+    // Обновляем кеш, если персонаж там есть
+    const cached = this.playersCache.get(playerId);
+    if (cached) {
+      cached.weight = newWeight;
+      this.playersCache.set(playerId, cached);
+    }
+  }
+
+  // Универсальный метод для обновления любого параметра персонажа
+  async updatePlayerParameter(
+    playerId: string,
+    parameter: string,
+    value: any,
+  ): Promise<{ success: boolean; message?: string; player?: PlayerState }> {
+    // Проверяем, что персонаж существует
+    const player = await this.playerModel.findOne({ id: playerId }).lean().exec();
+    if (!player) {
+      return { success: false, message: `Персонаж с ID ${playerId} не найден` };
+    }
+
+    // Список разрешенных параметров для обновления
+    const allowedParameters = [
+      'name',
+      'position',
+      'satiety',
+      'weight',
+      'stamina',
+      'collectionPower',
+      'experience',
+      'power',
+      'level',
+      'availableUpgrades',
+      'health',
+      'maxHealth',
+      'defense',
+      'luck',
+      'regeneration',
+      'totalCollected',
+      'totalFoodEaten',
+      'inventory',
+      'unlockedColors',
+      'colorLevels',
+      'buildings',
+      'userId',
+    ];
+
+    if (!allowedParameters.includes(parameter)) {
+      return { success: false, message: `Параметр "${parameter}" не разрешен для обновления` };
+    }
+
+    // Валидация значений для некоторых параметров
+    if (parameter === 'name' && (typeof value !== 'string' || value.trim().length === 0)) {
+      return { success: false, message: 'Имя не может быть пустым' };
+    }
+
+    if (parameter === 'name' && value.trim().length > 50) {
+      return { success: false, message: 'Имя слишком длинное (максимум 50 символов)' };
+    }
+
+    if (parameter === 'position' && (!value || typeof value.x !== 'number' || typeof value.y !== 'number')) {
+      return { success: false, message: 'Позиция должна быть объектом с полями x и y (числа)' };
+    }
+
+    // Обновляем параметр в базе данных
+    const updateData: any = {};
+    updateData[parameter] = value;
+
+    await this.playerModel.findOneAndUpdate(
+      { id: playerId },
+      { $set: updateData },
+    ).exec();
+
+    // Обновляем кеш
+    const cached = this.playersCache.get(playerId);
+    if (cached) {
+      (cached as any)[parameter] = value;
+      this.playersCache.set(playerId, cached);
+    } else {
+      // Если персонажа нет в кеше, загружаем его заново
+      const updatedPlayer = await this.playerModel.findOne({ id: playerId }).lean().exec();
+      if (updatedPlayer) {
+        const playerState = this.playerToState(updatedPlayer);
+        this.playersCache.set(playerId, playerState);
+        return { success: true, player: playerState };
+      }
+    }
+
+    // Возвращаем обновленного персонажа
+    const updatedPlayer = await this.playerModel.findOne({ id: playerId }).lean().exec();
+    if (updatedPlayer) {
+      const playerState = this.playerToState(updatedPlayer);
+      return { success: true, player: playerState };
+    }
+
+    return { success: true };
+  }
+
   async changePlayerName(clientId: string, newName: string): Promise<{ success: boolean; message?: string }> {
     if (!newName || newName.trim().length === 0) {
       return { success: false, message: 'Имя не может быть пустым' };

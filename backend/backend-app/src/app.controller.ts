@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put } from '@nestjs/common';
 import { AppService } from './app.service';
 import { GameService } from './game.service';
 
@@ -79,5 +79,27 @@ export class AppController {
       })),
       count: players.length,
     };
+  }
+
+  // Установить параметр персонажа по ID
+  @Put('players/:playerId/parameter/:parameter')
+  async setPlayerParameter(
+    @Param('playerId') playerId: string,
+    @Param('parameter') parameter: string,
+    @Body() body: { value: any },
+  ): Promise<{ success: boolean; message?: string; player?: any }> {
+    const result = await this.gameService.updatePlayerParameter(playerId, parameter, body.value);
+    return result;
+  }
+
+  // Альтернативный эндпоинт через POST
+  @Post('players/:playerId/parameter/:parameter')
+  async setPlayerParameterPost(
+    @Param('playerId') playerId: string,
+    @Param('parameter') parameter: string,
+    @Body() body: { value: any },
+  ): Promise<{ success: boolean; message?: string; player?: any }> {
+    const result = await this.gameService.updatePlayerParameter(playerId, parameter, body.value);
+    return result;
   }
 }

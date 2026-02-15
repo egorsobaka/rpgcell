@@ -425,6 +425,15 @@ function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const [players, setPlayers] = useState<PlayerState[]>([]);
+  const [characters, setCharacters] = useState<PlayerState[]>([]);
+  const [userId] = useState<string>(() => {
+    let id = localStorage.getItem('userId');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('userId', id);
+    }
+    return id;
+  });
   const [cellColors, setCellColors] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -447,7 +456,7 @@ function App() {
     Map<string, { progress: number; required: number }>
   >(() => new Map());
   const [cellHealth, setCellHealth] = useState<Map<string, number>>(() => new Map());
-  const [sidebarTab, setSidebarTab] = useState<'map' | 'inventory' | 'leaderboard' | 'chat' | 'cell-info' | 'stats' | 'help' | 'local-chat' | 'buildings'>('map');
+  const [sidebarTab, setSidebarTab] = useState<'map' | 'inventory' | 'leaderboard' | 'chat' | 'cell-info' | 'stats' | 'help' | 'local-chat' | 'buildings' | 'characters'>('map');
   const [buildings, setBuildings] = useState<Array<{ name: string; structure: any[]; cellPower: number; cellHealth: number }>>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [localChat, setLocalChat] = useState<LocalChatData | null>(null);
@@ -618,6 +627,42 @@ function App() {
 
     // Запрашиваем список построек при подключении
     s.emit('buildings:list');
+
+    // Обработчики для работы с персонажами
+    s.on('characters:list', (data: PlayerState[]) => {
+      setCharacters(data);
+    });
+
+    s.on('character:switched', (data: { success: boolean; character?: PlayerState; message?: string }) => {
+      if (data.success && data.character) {
+        setPlayer(data.character);
+        localStorage.setItem('playerId', data.character.id);
+        // Обновляем список персонажей
+        s.emit('characters:list', { userId });
+      } else if (data.message) {
+        setModalMessage({ title: 'Ошибка', message: data.message });
+      }
+    });
+
+    s.on('character:created', (data: { success: boolean; character?: PlayerState; message?: string; oldPlayerWeight?: number }) => {
+      if (data.success && data.character) {
+        setPlayer(data.character);
+        localStorage.setItem('playerId', data.character.id);
+        // Обновляем вес текущего персонажа, если он был изменен
+        if (data.oldPlayerWeight !== undefined && me) {
+          setPlayer({ ...me, weight: data.oldPlayerWeight });
+        }
+        // Обновляем список персонажей
+        s.emit('characters:list', { userId });
+      } else if (data.message) {
+        setModalMessage({ title: 'Ошибка', message: data.message });
+      }
+    });
+
+    // Запрашиваем список персонажей при подключении
+    s.on('connect', () => {
+      s.emit('characters:list', { userId });
+    });
 
     s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }) => {
       const key = `${data.position.x}:${data.position.y}`;
@@ -2116,6 +2161,100 @@ if (experience >= requiredExperience):
             )}
           </section>
         );
+      case 'characters':
+        return (
+          <section className="sidebar-section">
+            <h2>Персонажи</h2>
+            {me && me.weight > 255 * 2 && (
+              <div style={{ marginBottom: '12px' }}>
+                <button
+                  onClick={() => {
+                    if (!socket) return;
+                    socket.emit('character:create', { userId });
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    backgroundColor: '#22c55e',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 'bold',
+                  }}
+                >
+                  ➕ Добавить персонажа (вес уменьшится на 255)
+                </button>
+              </div>
+            )}
+            {characters.length === 0 ? (
+              <div style={{ color: '#94a3b8', textAlign: 'center', padding: '20px' }}>
+                {me && me.weight <= 255 * 2 ? (
+                  <div>
+                    <div>У вас пока нет персонажей.</div>
+                    <div style={{ marginTop: '8px', fontSize: '11px' }}>
+                      Для создания нового персонажа нужно набрать вес больше {255 * 2}
+                    </div>
+                  </div>
+                ) : (
+                  'У вас пока нет персонажей. Создайте первого!'
+                )}
+              </div>
+            ) : (
+              <div>
+                {characters.map((character) => {
+                  const isCurrent = character.id === me?.id;
+                  return (
+                    <div
+                      key={character.id}
+                      style={{
+                        marginBottom: '12px',
+                        padding: '12px',
+                        backgroundColor: isCurrent ? '#1e3a5f' : '#1e293b',
+                        borderRadius: '6px',
+                        border: isCurrent ? '2px solid #3b82f6' : '1px solid rgba(148, 163, 184, 0.3)',
+                        cursor: isCurrent ? 'default' : 'pointer',
+                        transition: 'all 0.2s',
+                      }}
+                      onClick={() => {
+                        if (!isCurrent && socket) {
+                          socket.emit('character:switch', { userId, characterId: character.id });
+                        }
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isCurrent) {
+                          e.currentTarget.style.backgroundColor = '#1e3a5f';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isCurrent) {
+                          e.currentTarget.style.backgroundColor = '#1e293b';
+                        }
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <div style={{ fontSize: '16px', color: '#fff', fontWeight: 'bold', marginBottom: '4px' }}>
+                            {character.name}
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                            Уровень: {character.level}
+                          </div>
+                        </div>
+                        {isCurrent && (
+                          <span style={{ fontSize: '12px', color: '#3b82f6', fontWeight: 'bold' }}>
+                            Текущий
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        );
       case 'map':
       default:
         return (
@@ -2140,6 +2279,20 @@ if (experience >= requiredExperience):
         {me && (
           <div className="player-info-container">
             <div className="player-name-experience-row">
+              <div 
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '14px',
+                  color: '#e5e7eb',
+                  fontWeight: 'bold',
+                  marginRight: '8px',
+                }}
+                title="Имя персонажа"
+              >
+                {me.name}
+              </div>
               <div 
                 className={`stat-icon ${me.availableUpgrades > 0 ? 'upgrades-available-clickable' : ''}`}
                 onClick={() => {
@@ -2325,6 +2478,18 @@ if (experience >= requiredExperience):
             >
               ❓ Помощь
             </button>
+            <button
+              className={`tab-button ${sidebarTab === 'characters' ? 'active' : ''}`}
+              onClick={() => {
+                setSidebarTab('characters');
+                if (socket) {
+                  socket.emit('characters:list', { userId });
+                }
+              }}
+              title="Персонажи"
+            >
+              👥 Персонажи
+            </button>
           </div>
           {renderSidebarContent()}
         </div>
@@ -2494,6 +2659,20 @@ if (experience >= requiredExperience):
         >
           <span className="bar-button-icon">❓</span>
           <span className="bar-button-text">Помощь</span>
+        </button>
+        <button
+          className={`bar-button ${sidebarTab === 'characters' ? 'active' : ''}`}
+          onClick={() => {
+            setSidebarTab('characters');
+            setSidebarOpen(true);
+            if (socket) {
+              socket.emit('characters:list', { userId });
+            }
+          }}
+          title="Персонажи"
+        >
+          <span className="bar-button-icon">👥</span>
+          <span className="bar-button-text">Персонажи</span>
         </button>
       </div>
 

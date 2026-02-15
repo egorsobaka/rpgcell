@@ -128,6 +128,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       
       this.logger.warn(`No player:restore event received for socket ${client.id} within timeout. Creating new player.`);
       // Создаем нового игрока с новым UUID (не client.id)
+      // userId будет установлен позже, если пользователь отправит его
       const newPlayer = await this.gameService.createNewPlayer();
       // Обновляем маппинг socket.id -> playerId
       this.socketToPlayerId.set(client.id, newPlayer.id);
@@ -135,6 +136,78 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.onlinePlayers.add(newPlayer.id);
       await this.sendInitialState(client, newPlayer);
     }, 3000);
+  }
+
+  @SubscribeMessage('characters:list')
+  async handleGetCharacters(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { userId: string },
+  ): Promise<void> {
+    const characters = await this.gameService.getPlayerCharacters(body.userId);
+    client.emit('characters:list', characters);
+  }
+
+  @SubscribeMessage('character:switch')
+  async handleSwitchCharacter(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { userId: string; characterId: string },
+  ): Promise<void> {
+    const character = await this.gameService.switchCharacter(body.userId, body.characterId);
+    if (character) {
+      // Обновляем маппинг socket.id -> playerId
+      this.socketToPlayerId.set(client.id, character.id);
+      // Добавляем игрока в список онлайн
+      this.onlinePlayers.add(character.id);
+      await this.sendInitialState(client, character);
+      client.emit('character:switched', { success: true, character });
+    } else {
+      client.emit('character:switched', { success: false, message: 'Персонаж не найден или не принадлежит вам' });
+    }
+  }
+
+  @SubscribeMessage('character:create')
+  async handleCreateCharacter(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { userId: string; name?: string },
+  ): Promise<void> {
+    const currentPlayerId = this.getPlayerId(client);
+    if (!currentPlayerId) {
+      client.emit('character:created', { success: false, message: 'Текущий персонаж не найден' });
+      return;
+    }
+
+    // Получаем текущего персонажа
+    const currentPlayer = await this.gameService.getPlayerById(currentPlayerId);
+    if (!currentPlayer) {
+      client.emit('character:created', { success: false, message: 'Текущий персонаж не найден' });
+      return;
+    }
+
+    // Проверяем, что вес больше 510 (255 * 2)
+    if (currentPlayer.weight <= 255 * 2) {
+      client.emit('character:created', { success: false, message: `Для создания нового персонажа нужен вес больше ${255 * 2}. Текущий вес: ${currentPlayer.weight}` });
+      return;
+    }
+
+    // Уменьшаем вес текущего персонажа на 255
+    const newWeight = Math.max(255, currentPlayer.weight - 255);
+    await this.gameService.updatePlayerWeight(currentPlayerId, newWeight);
+
+    // Создаем нового персонажа
+    const newCharacter = await this.gameService.createNewPlayer(body.userId);
+    if (body.name) {
+      await this.gameService.changePlayerName(newCharacter.id, body.name);
+      newCharacter.name = body.name;
+    }
+
+    // Обновляем маппинг socket.id -> playerId на нового персонажа
+    this.socketToPlayerId.set(client.id, newCharacter.id);
+    // Удаляем старого персонажа из списка онлайн
+    this.onlinePlayers.delete(currentPlayerId);
+    // Добавляем нового игрока в список онлайн
+    this.onlinePlayers.add(newCharacter.id);
+    await this.sendInitialState(client, newCharacter);
+    client.emit('character:created', { success: true, character: newCharacter, oldPlayerWeight: newWeight });
   }
 
   private async sendInitialState(client: Socket, player: PlayerState): Promise<void> {
