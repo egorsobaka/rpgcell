@@ -321,97 +321,55 @@ function generateCellParams(x: number, y: number): CellParams {
   return { food, building, experience, power };
 }
 
-// Генерация названия ресурса на основе пропорций параметров
-function generateCellName(params: CellParams, seed: number): string {
-  const { food, building, experience } = params;
-  const total = food + building + experience;
+// Генерация названия типа местности на основе пропорций еды и строительства
+// Для одинаковых пропорций возвращается одинаковое название
+function generateCellName(params: CellParams): string {
+  const { food, building } = params;
+  const total = food + building;
   
   if (total === 0) {
     return 'Пустота';
   }
   
-  // Вычисляем проценты каждого параметра
-  const foodPercent = (food / total) * 100;
-  const buildingPercent = (building / total) * 100;
-  const experiencePercent = (experience / total) * 100;
+  // Вычисляем пропорцию еды от общей суммы (food + building)
+  // Округляем до диапазонов для детерминированности
+  const foodRatio = food / total;
   
-  // Определяем доминирующий параметр (порог 40%)
-  const threshold = 40;
-  const isFoodDominant = foodPercent >= threshold;
-  const isBuildingDominant = buildingPercent >= threshold;
-  const isExperienceDominant = experiencePercent >= threshold;
+  // Определяем категорию на основе пропорции (округление до 10% для одинаковых названий)
+  const category = Math.floor(foodRatio * 10); // 0-10
   
-  // Используем seed для выбора конкретного названия из категории
-  const nameSeed = Math.abs(seed) % 1000;
-  
-  // Если один параметр доминирует
-  if (isFoodDominant && foodPercent >= 50) {
-    // Еда доминирует
-    const foodNames = [
-      'Яблоко', 'Груша', 'Виноград', 'Клубника', 'Малина', 'Черника',
-      'Морковь', 'Картофель', 'Помидор', 'Огурец', 'Капуста', 'Лук',
-      'Пшеница', 'Рожь', 'Овес', 'Ячмень', 'Кукуруза', 'Рис',
-      'Гриб', 'Орех', 'Мед', 'Молоко', 'Яйцо', 'Сыр'
-    ];
-    return foodNames[nameSeed % foodNames.length];
+  // Категории биомов на основе пропорции еды/строительства
+  if (category <= 1) {
+    // 0-10% еды, 90-100% строительства - каменистые/строительные биомы
+    return 'Степь';
+  } else if (category <= 2) {
+    // 10-20% еды, 80-90% строительства
+    return 'Пустыня';
+  } else if (category <= 3) {
+    // 20-30% еды, 70-80% строительства
+    return 'Саванна';
+  } else if (category <= 4) {
+    // 30-40% еды, 60-70% строительства
+    return 'Прерия';
+  } else if (category <= 5) {
+    // 40-50% еды, 50-60% строительства - сбалансированные биомы
+    return 'Луга';
+  } else if (category <= 6) {
+    // 50-60% еды, 40-50% строительства
+    return 'Роща';
+  } else if (category <= 7) {
+    // 60-70% еды, 30-40% строительства
+    return 'Лес';
+  } else if (category <= 8) {
+    // 70-80% еды, 20-30% строительства
+    return 'Тайга';
+  } else if (category <= 9) {
+    // 80-90% еды, 10-20% строительства
+    return 'Джунгли';
+  } else {
+    // 90-100% еды, 0-10% строительства - плодородные биомы
+    return 'Цветущая долина';
   }
-  
-  if (isBuildingDominant && buildingPercent >= 50) {
-    // Строительство доминирует
-    const buildingNames = [
-      'Камень', 'Гранит', 'Известняк', 'Песчаник', 'Мрамор',
-      'Дерево', 'Дуб', 'Сосна', 'Береза', 'Ель',
-      'Глина', 'Песок', 'Гравий', 'Цемент', 'Кирпич',
-      'Железо', 'Медь', 'Олово', 'Свинец', 'Камень для строительства'
-    ];
-    return buildingNames[nameSeed % buildingNames.length];
-  }
-  
-  if (isExperienceDominant && experiencePercent >= 50) {
-    // Опыт доминирует
-    const experienceNames = [
-      'Кристалл', 'Рубин', 'Сапфир', 'Изумруд', 'Алмаз',
-      'Железная руда', 'Медная руда', 'Золотая руда', 'Серебряная руда',
-      'Кварц', 'Аметист', 'Топаз', 'Опал',
-      'Магический кристалл', 'Эссенция маны', 'Мистический камень'
-    ];
-    return experienceNames[nameSeed % experienceNames.length];
-  }
-  
-  // Если два параметра примерно равны и больше третьего
-  if (Math.abs(foodPercent - buildingPercent) < 15 && foodPercent > experiencePercent && buildingPercent > experiencePercent) {
-    // Еда + Строительство
-    const combinedNames = [
-      'Плодородная почва', 'Строительная глина', 'Древесный плод',
-      'Каменный фрукт', 'Смешанный ресурс'
-    ];
-    return combinedNames[nameSeed % combinedNames.length];
-  }
-  
-  if (Math.abs(foodPercent - experiencePercent) < 15 && foodPercent > buildingPercent && experiencePercent > buildingPercent) {
-    // Еда + Опыт
-    const combinedNames = [
-      'Магический плод', 'Кристаллический мед', 'Энергетическая ягода',
-      'Мистический гриб', 'Волшебное яблоко'
-    ];
-    return combinedNames[nameSeed % combinedNames.length];
-  }
-  
-  if (Math.abs(buildingPercent - experiencePercent) < 15 && buildingPercent > foodPercent && experiencePercent > foodPercent) {
-    // Строительство + Опыт
-    const combinedNames = [
-      'Магический камень', 'Кристаллическая руда', 'Энергетический камень',
-      'Мистический металл', 'Волшебный кристалл'
-    ];
-    return combinedNames[nameSeed % combinedNames.length];
-  }
-  
-  // Если все примерно равны (смешанный ресурс)
-  const mixedNames = [
-    'Смешанный ресурс', 'Комплексная руда', 'Многоцелевой материал',
-    'Универсальный ресурс', 'Комбинированное сырье'
-  ];
-  return mixedNames[nameSeed % mixedNames.length];
 }
 
 // Вычисление цвета из параметров клетки
@@ -1272,9 +1230,8 @@ export class GameService {
     // Здоровье = сила * опыт
     const health = params.power * params.experience;
     
-    // Генерируем название на основе параметров, если его еще нет
-    const paramSeed = (Math.floor((pos.x + pos.y) / 10) * 73856093) ^ (Math.floor((pos.x - pos.y) / 3) * 19349663);
-    const cellName = generateCellName(params, paramSeed);
+    // Генерируем название типа местности на основе пропорций еды и строительства
+    const cellName = generateCellName(params);
     
     let cell = await this.cellModel.findOneAndUpdate(
       { key },
@@ -1384,9 +1341,8 @@ export class GameService {
     const params = generateCellParams(pos.x, pos.y);
     const color = paramsToColor(params, constructionPoints, constructionType);
     
-    // Генерируем название на основе параметров
-    const paramSeed = (Math.floor((pos.x + pos.y) / 10) * 73856093) ^ (Math.floor((pos.x - pos.y) / 3) * 19349663);
-    const name = generateCellName(params, paramSeed);
+    // Генерируем название типа местности на основе пропорций еды и строительства
+    const name = generateCellName(params);
 
     // Сохраняем в БД только если клетка не существует ($setOnInsert не обновит существующую)
     await this.cellModel.findOneAndUpdate(
@@ -1407,10 +1363,9 @@ export class GameService {
       { upsert: true },
     ).exec();
 
-    // Если клетка уже существовала, но у неё нет названия, генерируем его
+    // Если клетка уже существовала, но у неё нет названия, генерируем его на основе параметров
     if (cell && !cell.name && params) {
-      const paramSeed = (Math.floor((pos.x + pos.y) / 10) * 73856093) ^ (Math.floor((pos.x - pos.y) / 3) * 19349663);
-      const generatedName = generateCellName(params, paramSeed);
+      const generatedName = generateCellName(params);
       await this.cellModel.findOneAndUpdate(
         { key },
         { $set: { name: generatedName } },
