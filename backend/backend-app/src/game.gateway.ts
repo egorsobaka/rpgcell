@@ -56,19 +56,30 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     
     // Если есть playerId в auth, сразу пытаемся восстановить игрока
     if (authPlayerId) {
-      this.logger.log(`Found playerId in auth: ${authPlayerId}, attempting to restore`);
+      const authUserId = authData?.userId;
+      this.logger.log(`Found playerId in auth: ${authPlayerId}, userId: ${authUserId}, attempting to restore`);
       const existingPlayer = await this.gameService.getPlayerById(authPlayerId);
       if (existingPlayer) {
         this.logger.log(`Restoring existing player from auth: ${authPlayerId}`);
+        // Обновляем userId, если он передан и у игрока его еще нет
+        if (authUserId && !existingPlayer.userId) {
+          await this.gameService.updatePlayerParameter(authPlayerId, 'userId', authUserId);
+          existingPlayer.userId = authUserId;
+        }
         connectionHandled = true;
         this.socketToPlayerId.set(client.id, authPlayerId);
         this.onlinePlayers.add(authPlayerId);
         await this.sendInitialState(client, existingPlayer);
         // Регистрируем обработчик для обновлений при переподключении
-        client.on('player:restore', async (data: { playerId: string }) => {
+        client.on('player:restore', async (data: { playerId: string; userId?: string }) => {
           if (data.playerId === authPlayerId) {
             const player = await this.gameService.getPlayerById(data.playerId);
             if (player) {
+              // Обновляем userId, если он передан и у игрока его еще нет
+              if (data.userId && !player.userId) {
+                await this.gameService.updatePlayerParameter(data.playerId, 'userId', data.userId);
+                player.userId = data.userId;
+              }
               await this.sendInitialState(client, player);
             }
           }
@@ -81,8 +92,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     
     // Обработчик для восстановления игрока по сохраненному ID
     // Используем 'on' вместо 'once', чтобы обработать событие даже при переподключении
-    client.on('player:restore', async (data: { playerId: string }) => {
-      this.logger.log(`Received player:restore for playerId: ${data.playerId}, socket: ${client.id}, connectionHandled: ${connectionHandled}`);
+    client.on('player:restore', async (data: { playerId: string; userId?: string }) => {
+      this.logger.log(`Received player:restore for playerId: ${data.playerId}, userId: ${data.userId}, socket: ${client.id}, connectionHandled: ${connectionHandled}`);
       
       // Если уже обработано, игнорируем повторные запросы
       if (connectionHandled) {
@@ -92,6 +103,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           this.logger.log(`Updating state for existing player: ${data.playerId}`);
           const existingPlayer = await this.gameService.getPlayerById(data.playerId);
           if (existingPlayer) {
+            // Обновляем userId, если он передан и у игрока его еще нет
+            if (data.userId && !existingPlayer.userId) {
+              await this.gameService.updatePlayerParameter(data.playerId, 'userId', data.userId);
+              existingPlayer.userId = data.userId;
+            }
             await this.sendInitialState(client, existingPlayer);
           }
         }
@@ -102,6 +118,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const existingPlayer = await this.gameService.getPlayerById(data.playerId);
       if (existingPlayer) {
         this.logger.log(`Restoring existing player: ${data.playerId}`);
+        // Обновляем userId, если он передан и у игрока его еще нет
+        if (data.userId && !existingPlayer.userId) {
+          await this.gameService.updatePlayerParameter(data.playerId, 'userId', data.userId);
+          existingPlayer.userId = data.userId;
+        }
         // Обновляем маппинг socket.id -> playerId
         this.socketToPlayerId.set(client.id, data.playerId);
         // Добавляем игрока в список онлайн
@@ -112,6 +133,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         // или используем сохраненный playerId для создания нового игрока с этим ID
         this.logger.warn(`Player with ID ${data.playerId} not found, but playerId was provided. Creating new player with this ID.`);
         const newPlayer = await this.gameService.getOrCreatePlayer(data.playerId);
+        // Устанавливаем userId, если он передан
+        if (data.userId && !newPlayer.userId) {
+          await this.gameService.updatePlayerParameter(data.playerId, 'userId', data.userId);
+          newPlayer.userId = data.userId;
+        }
         // Обновляем маппинг socket.id -> playerId
         this.socketToPlayerId.set(client.id, data.playerId);
         // Добавляем игрока в список онлайн
@@ -127,9 +153,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       connectionHandled = true;
       
       this.logger.warn(`No player:restore event received for socket ${client.id} within timeout. Creating new player.`);
+      // Проверяем, есть ли userId в auth данных
+      const authData = (client.handshake as any).auth;
+      const authUserId = authData?.userId;
       // Создаем нового игрока с новым UUID (не client.id)
-      // userId будет установлен позже, если пользователь отправит его
-      const newPlayer = await this.gameService.createNewPlayer();
+      // userId будет установлен, если он передан в auth
+      const newPlayer = await this.gameService.createNewPlayer(authUserId);
       // Обновляем маппинг socket.id -> playerId
       this.socketToPlayerId.set(client.id, newPlayer.id);
       // Добавляем игрока в список онлайн
@@ -143,6 +172,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { userId: string },
   ): Promise<void> {
+    const playerId = this.getPlayerId(client);
+    
+    // Если у текущего персонажа нет userId, устанавливаем его
+    if (playerId) {
+      const currentPlayer = await this.gameService.getPlayerById(playerId);
+      if (currentPlayer && !currentPlayer.userId) {
+        await this.gameService.updatePlayerParameter(playerId, 'userId', body.userId);
+      }
+    }
+    
     const characters = await this.gameService.getPlayerCharacters(body.userId);
     client.emit('characters:list', characters);
   }
@@ -229,9 +268,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       cells,
     });
     
-    // Отправляем информацию о личном чате, если есть
+    // Отправляем информацию о личном чате, если есть и есть персонажи разных игроков
     const localChat = await this.gameService.getLocalChat(player.position);
-    if (localChat) {
+    if (localChat && localChat.participants.length > 0) {
       const participants = await this.gameService.getLocalChatParticipants(player.position);
       const allPlayers = await this.gameService.getPlayers();
       client.emit('local:chat:update', {
@@ -241,6 +280,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           return p ? { id: p.id, name: p.name } : null;
         }).filter(Boolean),
         messages: localChat.messages.slice(-20),
+      });
+    } else {
+      // Если чата нет или все персонажи одного игрока, отправляем пустой чат
+      client.emit('local:chat:update', {
+        cellPosition: player.position,
+        participants: [],
+        messages: [],
       });
     }
     
@@ -316,8 +362,9 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     ]);
     
     // Отправляем обновление чата всем участникам на этой клетке (включая самого игрока)
+    // Только если есть персонажи разных игроков
     const key = `${player.position.x}:${player.position.y}`;
-    if (localChat) {
+    if (localChat && localChat.participants.length > 0) {
       const chatUpdate = {
         cellPosition: player.position,
         participants: participants.map(id => {
@@ -345,7 +392,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Также отправляем обновление самому игроку, который переместился (на случай, если он еще не в списке участников)
       client.emit('local:chat:update', chatUpdate);
     } else {
-      // Если чата нет, отправляем пустое обновление, чтобы очистить локальный чат на клиенте
+      // Если чата нет или все персонажи одного игрока, отправляем пустое обновление, чтобы очистить локальный чат на клиенте
       client.emit('local:chat:update', {
         cellPosition: player.position,
         participants: [],
@@ -365,12 +412,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const playerId = this.getPlayerId(client);
     const player = await this.gameService.collectCell(playerId, body.position);
     if (!player) return;
-    const { color: cellColor, params, constructionPoints, constructionType, buildingName, buildingId } = await this.gameService.getCellColorInternalPublic(body.position);
+    const { color: cellColor, params, constructionPoints, constructionType, buildingName, buildingId, name } = await this.gameService.getCellColorInternalPublic(body.position);
 
     this.server.emit('cell:updated', {
       position: body.position,
       color: cellColor,
       params,
+      name,
       constructionPoints,
       constructionType,
       buildingName,
@@ -413,6 +461,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         position: body.position,
         color: '#ffffff',
         params: { food: 0, building: 0, experience: 0, power: 1 },
+        name: undefined,
       });
       
       // Отправляем анимацию сбора ресурсов победителю
@@ -473,11 +522,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (result.exploded) {
       // Отправляем обновления для всех затронутых клеток
       for (const cell of result.affectedCells) {
-        const { params, constructionPoints, constructionType, buildingName, buildingId } = await this.gameService.getCellColorInternalPublic(cell.position);
+        const { params, constructionPoints, constructionType, buildingName, buildingId, name } = await this.gameService.getCellColorInternalPublic(cell.position);
         this.server.emit('cell:updated', {
           position: cell.position,
           color: cell.color,
           params,
+          name,
           constructionPoints,
           constructionType,
           buildingName,
@@ -567,6 +617,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
           position: player.position,
           color: cellData.color,
           params: cellData.params,
+          name: cellData.name,
           constructionPoints: result.constructionPoints,
           constructionType: result.constructionType,
           buildingName: cellData.buildingName,
@@ -608,6 +659,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
             position: cellPosition,
             color: cellData.color,
             params: cellData.params,
+            name: cellData.name,
             constructionPoints: cellData.constructionPoints,
             constructionType: cellData.constructionType,
             buildingName: cellData.buildingName,
@@ -698,7 +750,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.gameService.getPlayers(),
     ]);
     
-    if (localChat) {
+    if (localChat && localChat.participants.length > 0) {
       client.emit('local:chat:update', {
         cellPosition: body.position,
         participants: participants.map((id: string) => {
@@ -708,6 +760,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         messages: localChat.messages.slice(-20),
       });
     } else {
+      // Если чата нет или все персонажи одного игрока, отправляем пустой чат
       client.emit('local:chat:update', {
         cellPosition: body.position,
         participants: [],

@@ -321,6 +321,99 @@ function generateCellParams(x: number, y: number): CellParams {
   return { food, building, experience, power };
 }
 
+// Генерация названия ресурса на основе пропорций параметров
+function generateCellName(params: CellParams, seed: number): string {
+  const { food, building, experience } = params;
+  const total = food + building + experience;
+  
+  if (total === 0) {
+    return 'Пустота';
+  }
+  
+  // Вычисляем проценты каждого параметра
+  const foodPercent = (food / total) * 100;
+  const buildingPercent = (building / total) * 100;
+  const experiencePercent = (experience / total) * 100;
+  
+  // Определяем доминирующий параметр (порог 40%)
+  const threshold = 40;
+  const isFoodDominant = foodPercent >= threshold;
+  const isBuildingDominant = buildingPercent >= threshold;
+  const isExperienceDominant = experiencePercent >= threshold;
+  
+  // Используем seed для выбора конкретного названия из категории
+  const nameSeed = Math.abs(seed) % 1000;
+  
+  // Если один параметр доминирует
+  if (isFoodDominant && foodPercent >= 50) {
+    // Еда доминирует
+    const foodNames = [
+      'Яблоко', 'Груша', 'Виноград', 'Клубника', 'Малина', 'Черника',
+      'Морковь', 'Картофель', 'Помидор', 'Огурец', 'Капуста', 'Лук',
+      'Пшеница', 'Рожь', 'Овес', 'Ячмень', 'Кукуруза', 'Рис',
+      'Гриб', 'Орех', 'Мед', 'Молоко', 'Яйцо', 'Сыр'
+    ];
+    return foodNames[nameSeed % foodNames.length];
+  }
+  
+  if (isBuildingDominant && buildingPercent >= 50) {
+    // Строительство доминирует
+    const buildingNames = [
+      'Камень', 'Гранит', 'Известняк', 'Песчаник', 'Мрамор',
+      'Дерево', 'Дуб', 'Сосна', 'Береза', 'Ель',
+      'Глина', 'Песок', 'Гравий', 'Цемент', 'Кирпич',
+      'Железо', 'Медь', 'Олово', 'Свинец', 'Камень для строительства'
+    ];
+    return buildingNames[nameSeed % buildingNames.length];
+  }
+  
+  if (isExperienceDominant && experiencePercent >= 50) {
+    // Опыт доминирует
+    const experienceNames = [
+      'Кристалл', 'Рубин', 'Сапфир', 'Изумруд', 'Алмаз',
+      'Железная руда', 'Медная руда', 'Золотая руда', 'Серебряная руда',
+      'Кварц', 'Аметист', 'Топаз', 'Опал',
+      'Магический кристалл', 'Эссенция маны', 'Мистический камень'
+    ];
+    return experienceNames[nameSeed % experienceNames.length];
+  }
+  
+  // Если два параметра примерно равны и больше третьего
+  if (Math.abs(foodPercent - buildingPercent) < 15 && foodPercent > experiencePercent && buildingPercent > experiencePercent) {
+    // Еда + Строительство
+    const combinedNames = [
+      'Плодородная почва', 'Строительная глина', 'Древесный плод',
+      'Каменный фрукт', 'Смешанный ресурс'
+    ];
+    return combinedNames[nameSeed % combinedNames.length];
+  }
+  
+  if (Math.abs(foodPercent - experiencePercent) < 15 && foodPercent > buildingPercent && experiencePercent > buildingPercent) {
+    // Еда + Опыт
+    const combinedNames = [
+      'Магический плод', 'Кристаллический мед', 'Энергетическая ягода',
+      'Мистический гриб', 'Волшебное яблоко'
+    ];
+    return combinedNames[nameSeed % combinedNames.length];
+  }
+  
+  if (Math.abs(buildingPercent - experiencePercent) < 15 && buildingPercent > foodPercent && experiencePercent > foodPercent) {
+    // Строительство + Опыт
+    const combinedNames = [
+      'Магический камень', 'Кристаллическая руда', 'Энергетический камень',
+      'Мистический металл', 'Волшебный кристалл'
+    ];
+    return combinedNames[nameSeed % combinedNames.length];
+  }
+  
+  // Если все примерно равны (смешанный ресурс)
+  const mixedNames = [
+    'Смешанный ресурс', 'Комплексная руда', 'Многоцелевой материал',
+    'Универсальный ресурс', 'Комбинированное сырье'
+  ];
+  return mixedNames[nameSeed % mixedNames.length];
+}
+
 // Вычисление цвета из параметров клетки
 // r = building + (115 - power)
 // g = food + (115 - power)
@@ -1179,6 +1272,10 @@ export class GameService {
     // Здоровье = сила * опыт
     const health = params.power * params.experience;
     
+    // Генерируем название на основе параметров, если его еще нет
+    const paramSeed = (Math.floor((pos.x + pos.y) / 10) * 73856093) ^ (Math.floor((pos.x - pos.y) / 3) * 19349663);
+    const cellName = generateCellName(params, paramSeed);
+    
     let cell = await this.cellModel.findOneAndUpdate(
       { key },
       {
@@ -1190,12 +1287,21 @@ export class GameService {
           building: params.building,
           experience: params.experience,
           power: params.power,
+          name: cellName,
           health,
           playerProgress: {},
         },
       },
       { upsert: true, new: true }
     ).exec();
+    
+    // Если клетка уже существовала, но у неё нет названия, генерируем его
+    if (cell && !cell.name) {
+      await this.cellModel.findOneAndUpdate(
+        { key },
+        { $set: { name: cellName } },
+      ).exec();
+    }
     
     // Если клетка существовала, но у неё нет здоровья, инициализируем его
     if (cell && (cell.health === undefined || cell.health === null)) {
@@ -1208,7 +1314,7 @@ export class GameService {
   }
 
   // Внутренний метод для получения цвета и параметров клетки
-  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }> {
+  private async getCellColorInternal(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string; name?: string }> {
     const key = `${pos.x}:${pos.y}`;
     const cell = await this.cellModel.findOne({ key }).exec();
     
@@ -1232,6 +1338,7 @@ export class GameService {
           params,
           constructionPoints: 0,
           constructionType: undefined,
+          name: cell.name,
         };
       }
       
@@ -1251,6 +1358,7 @@ export class GameService {
         constructionType,
         buildingName: cell.buildingName,
         buildingId: cell.buildingId,
+        name: cell.name,
       };
     }
 
@@ -1268,12 +1376,17 @@ export class GameService {
         },
         constructionPoints: 0,
         constructionType: undefined,
+        name: cell.name,
       };
     }
 
     // Генерируем новые параметры только для новых клеток
     const params = generateCellParams(pos.x, pos.y);
     const color = paramsToColor(params, constructionPoints, constructionType);
+    
+    // Генерируем название на основе параметров
+    const paramSeed = (Math.floor((pos.x + pos.y) / 10) * 73856093) ^ (Math.floor((pos.x - pos.y) / 3) * 19349663);
+    const name = generateCellName(params, paramSeed);
 
     // Сохраняем в БД только если клетка не существует ($setOnInsert не обновит существующую)
     await this.cellModel.findOneAndUpdate(
@@ -1294,7 +1407,18 @@ export class GameService {
       { upsert: true },
     ).exec();
 
-    return { color, params, constructionPoints, constructionType: undefined, buildingName: undefined, buildingId: undefined };
+    // Если клетка уже существовала, но у неё нет названия, генерируем его
+    if (cell && !cell.name && params) {
+      const paramSeed = (Math.floor((pos.x + pos.y) / 10) * 73856093) ^ (Math.floor((pos.x - pos.y) / 3) * 19349663);
+      const generatedName = generateCellName(params, paramSeed);
+      await this.cellModel.findOneAndUpdate(
+        { key },
+        { $set: { name: generatedName } },
+      ).exec();
+      return { color, params, constructionPoints, constructionType: undefined, buildingName: undefined, buildingId: undefined, name: generatedName };
+    }
+    
+    return { color, params, constructionPoints, constructionType: undefined, buildingName: undefined, buildingId: undefined, name };
   }
 
   // Получить только цвет (для обратной совместимости)
@@ -1309,7 +1433,7 @@ export class GameService {
   }
 
   // Публичный метод для получения параметров клетки (для gateway)
-  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }> {
+  async getCellColorInternalPublic(pos: CellPosition): Promise<{ color: CellColor; params: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string; name?: string }> {
     return await this.getCellColorInternal(pos);
   }
 
@@ -1340,16 +1464,18 @@ export class GameService {
     constructionType?: number;
     buildingName?: string;
     buildingId?: string;
+    name?: string;
   }[]> {
-    const result: { position: CellPosition; color: CellColor; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }[] = [];
+    const result: { position: CellPosition; color: CellColor; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string; name?: string }[] = [];
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const pos = { x: center.x + dx, y: center.y + dy };
-        const { color, params, constructionPoints, constructionType, buildingName, buildingId } = await this.getCellColorInternal(pos);
+        const { color, params, constructionPoints, constructionType, buildingName, buildingId, name } = await this.getCellColorInternal(pos);
         result.push({
           position: pos,
           color,
           params,
+          name,
           constructionPoints,
           constructionType,
           buildingName,
@@ -1864,9 +1990,30 @@ export class GameService {
     const localChat = await this.localChatModel.findOne({ key }).lean().exec();
     if (!localChat) return null;
     
+    const participants = localChat.participants || [];
+    if (participants.length === 0) return null;
+    
+    // Проверяем, что на клетке есть персонажи разных игроков
+    const participantPlayers = await this.playerModel.find({ 
+      id: { $in: participants } 
+    }).lean().exec();
+    
+    // Получаем уникальные userId участников (игнорируем тех, у кого нет userId)
+    const userIds = new Set<string>();
+    for (const player of participantPlayers) {
+      if (player.userId) {
+        userIds.add(player.userId);
+      }
+    }
+    
+    // Если все участники принадлежат одному игроку (или у всех нет userId), не показываем чат
+    if (userIds.size <= 1) {
+      return null;
+    }
+    
     return {
       cellPosition: localChat.cellPosition,
-      participants: localChat.participants || [],
+      participants: participants,
       messages: (localChat.messages || []) as LocalChatMessage[],
     };
   }
@@ -1884,20 +2031,37 @@ export class GameService {
 
     const key = `${pos.x}:${pos.y}`;
     
-    // Получаем или создаем чат
-    let localChat = await this.localChatModel.findOne({ key }).exec();
+    // Получаем чат (не создаем новый, если его нет)
+    const localChat = await this.localChatModel.findOne({ key }).exec();
     if (!localChat) {
-      localChat = new this.localChatModel({
-        key,
-        cellPosition: pos,
-        participants: [clientId],
-        messages: [],
-      });
-      await localChat.save();
+      return { success: false };
     }
 
     // Проверяем, что игрок в чате
     if (!localChat.participants.includes(clientId)) {
+      return { success: false };
+    }
+
+    // Проверяем, что на клетке есть персонажи разных игроков
+    const participants = localChat.participants || [];
+    if (participants.length === 0) {
+      return { success: false };
+    }
+    
+    const participantPlayers = await this.playerModel.find({ 
+      id: { $in: participants } 
+    }).lean().exec();
+    
+    // Получаем уникальные userId участников (игнорируем тех, у кого нет userId)
+    const userIds = new Set<string>();
+    for (const p of participantPlayers) {
+      if (p.userId) {
+        userIds.add(p.userId);
+      }
+    }
+    
+    // Если все участники принадлежат одному игроку (или у всех нет userId), не разрешаем отправку
+    if (userIds.size <= 1) {
       return { success: false };
     }
 

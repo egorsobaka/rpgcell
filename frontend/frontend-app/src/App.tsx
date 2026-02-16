@@ -448,6 +448,9 @@ function App() {
   const [cellConstructionTypes, setCellConstructionTypes] = useState<Map<string, number>>(
     () => new Map(),
   );
+  const [cellNames, setCellNames] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -486,8 +489,8 @@ function App() {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
       timeout: 20000,
-      // Отправляем playerId сразу при подключении, если есть
-      auth: savedPlayerId ? { playerId: savedPlayerId } : undefined,
+      // Отправляем playerId и userId сразу при подключении, если есть
+      auth: savedPlayerId ? { playerId: savedPlayerId, userId } : { userId },
     });
     setSocket(s);
 
@@ -495,8 +498,8 @@ function App() {
     // Отправляем при каждом подключении (включая переподключения)
     const sendPlayerRestore = () => {
       if (savedPlayerId) {
-        console.log('Sending player:restore with playerId:', savedPlayerId);
-        s.emit('player:restore', { playerId: savedPlayerId });
+        console.log('Sending player:restore with playerId:', savedPlayerId, 'userId:', userId);
+        s.emit('player:restore', { playerId: savedPlayerId, userId });
       }
     };
     
@@ -537,7 +540,7 @@ function App() {
       (payload: {
         center: CellPosition;
         radius: number;
-        cells: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }[];
+        cells: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string; name?: string }[];
       }) => {
         setCellColors((prev) => {
           const next = new Map(prev);
@@ -555,6 +558,18 @@ function App() {
               next.set(key, cell.params);
               // Также сохраняем параметры по цвету для использования в инвентаре
               next.set(cell.color, cell.params);
+            }
+          }
+          return next;
+        });
+        
+        // Обновляем названия клеток
+        setCellNames((prev) => {
+          const next = new Map(prev);
+          for (const cell of payload.cells) {
+            if (cell.name) {
+              const key = `${cell.position.x}:${cell.position.y}`;
+              next.set(key, cell.name);
             }
           }
           return next;
@@ -666,7 +681,7 @@ function App() {
       s.emit('characters:list', { userId });
     });
 
-    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string }) => {
+    s.on('cell:updated', (data: { position: CellPosition; color: string; params?: CellParams; constructionPoints?: number; constructionType?: number; buildingName?: string; buildingId?: string; name?: string }) => {
       const key = `${data.position.x}:${data.position.y}`;
       
       // Обновляем цвет клетки
@@ -683,6 +698,22 @@ function App() {
           next.set(key, data.params!);
           // Также сохраняем параметры по цвету для использования в инвентаре
           next.set(data.color, data.params!);
+          return next;
+        });
+      }
+      
+      // Обновляем название клетки
+      if (data.name) {
+        setCellNames((prev) => {
+          const next = new Map(prev);
+          next.set(key, data.name!);
+          return next;
+        });
+      } else if (data.color === '#ffffff') {
+        // Если клетка стала белой, удаляем название
+        setCellNames((prev) => {
+          const next = new Map(prev);
+          next.delete(key);
           return next;
         });
       }
@@ -1125,6 +1156,22 @@ function App() {
                     const buildingAmount = params?.building ?? getRGBComponents(color).r;
                     const itemWeight = getItemWeight(color, count, params);
                     const singleItemWeight = getItemWeight(color, 1, params);
+                    // Пытаемся найти название по цвету (может быть несколько клеток с одним цветом, берем первое найденное)
+                    // Также можно хранить названия по цвету в отдельной мапе для инвентаря
+                    let cellName: string | undefined;
+                    // Ищем название в cellNames по позициям
+                    for (const [key, name] of cellNames.entries()) {
+                      try {
+                        const [x, y] = key.split(':').map(Number);
+                        const cellColorAtKey = getCellColor({ x, y });
+                        if (cellColorAtKey === color) {
+                          cellName = name;
+                          break;
+                        }
+                      } catch (e) {
+                        // Игнорируем ошибки парсинга
+                      }
+                    }
                     return (
                       <li key={color} className="inventory-item">
                         <span
@@ -1133,6 +1180,11 @@ function App() {
                         />
                         <span className="inventory-count">{count}</span>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', color: '#94a3b8' }}>
+                          {cellName && (
+                            <span style={{ fontWeight: 'bold', fontSize: '14px', color: '#e5e7eb', marginBottom: '2px' }}>
+                              {cellName}
+                            </span>
+                          )}
                           <span>Сила: {cellPower}</span>
                           <span>Еда: {satietyRestore} | Строй: {buildingAmount} | Опыт: {experienceGain}</span>
                           <span>Вес: {itemWeight} (1 шт. = {singleItemWeight.toFixed(2)})</span>
@@ -1366,9 +1418,18 @@ function App() {
                 const maxAmount = Math.max(1, Math.ceil(buildingAmount / 32));
                 const collectedAmountRange = maxAmount > 1 ? `1-${maxAmount}` : '1';
                 const isInCollection = me?.unlockedColors.includes(cellColor) ?? false;
+                const cellName = cellNames.get(key);
 
   return (
     <>
+                    {cellName && (
+                      <div className="cell-info-item">
+                        <span className="cell-info-label">Название:</span>
+                        <span className="cell-info-value" style={{ fontWeight: 'bold', fontSize: '16px', color: '#e5e7eb' }}>
+                          {cellName}
+                        </span>
+                      </div>
+                    )}
                     <div className="cell-info-item">
                       <span className="cell-info-label">Цвет:</span>
                       <span 
@@ -1560,7 +1621,7 @@ function App() {
                               });
                               // Запрашиваем обновление состояния через WebSocket
                               if (socket) {
-                                socket.emit('player:restore', { playerId: me.id });
+                                socket.emit('player:restore', { playerId: me.id, userId });
                               }
                               setModalMessage({ title: 'Успех', message: 'Скин успешно загружен!' });
                             } else {
@@ -1596,7 +1657,7 @@ function App() {
                               });
                               // Запрашиваем обновление состояния через WebSocket
                               if (socket) {
-                                socket.emit('player:restore', { playerId: me.id });
+                                socket.emit('player:restore', { playerId: me.id, userId });
                               }
                               setModalMessage({ title: 'Успех', message: 'Скин удален' });
                             } else {

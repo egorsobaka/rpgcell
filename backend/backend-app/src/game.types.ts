@@ -90,4 +90,5 @@ export interface CellData {
   constructionType?: number; // Тип строительного материала
   buildingName?: string; // Название постройки
   buildingId?: string; // ID постройки
+  name?: string; // Название ресурса
 }

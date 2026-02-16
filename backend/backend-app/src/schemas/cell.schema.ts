@@ -45,6 +45,9 @@ export class Cell {
 
   @Prop({ type: String, required: false })
   buildingId?: string; // ID постройки (для группировки клеток одной постройки)
+
+  @Prop({ type: String, required: false })
+  name?: string; // Название ресурса на основе пропорций параметров
 }
 
 export const CellSchema = SchemaFactory.createForClass(Cell);
