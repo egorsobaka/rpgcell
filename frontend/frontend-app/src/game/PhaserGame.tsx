@@ -3,6 +3,8 @@ import Phaser from 'phaser';
 import { isFeatureEnabled } from '../featureFlags';
 
 const VITE_API_URL = import.meta.env.VITE_API_URL;
+const VITE_UPLOAD_URL = import.meta.env.VITE_UPLOAD_URL;
+
 
 console.log('VITE_API_URL', VITE_API_URL);
 
@@ -694,7 +696,7 @@ export function PhaserGame(props: PhaserGameProps) {
         }
 
         // Загружаем скин
-        this.load.image(skinKey, `${VITE_API_URL}/${skinUrl}`);
+        this.load.image(skinKey, `${VITE_UPLOAD_URL}/${skinUrl}`);
         this.load.once(`filecomplete-image-${skinKey}`, () => {
           this.loadedSkins.add(skinUrl);
         });
