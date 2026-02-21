@@ -82,7 +82,7 @@ services:
     networks:
       - rpg-network
 
-nginx:
+  nginx:
     image: nginx:alpine
     container_name: rpg-nginx
     restart: unless-stopped
