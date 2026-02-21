@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import Phaser from 'phaser';
 import { isFeatureEnabled } from '../featureFlags';
 
+const VITE_API_URL = import.meta.env.VITE_API_URL;
+
+console.log('VITE_API_URL', VITE_API_URL);
+
 export interface CellPosition {
   x: number;
   y: number;
@@ -690,7 +694,7 @@ export function PhaserGame(props: PhaserGameProps) {
         }
 
         // Загружаем скин
-        this.load.image(skinKey, `http://localhost:3000${skinUrl}`);
+        this.load.image(skinKey, `${VITE_API_URL}/${skinUrl}`);
         this.load.once(`filecomplete-image-${skinKey}`, () => {
           this.loadedSkins.add(skinUrl);
         });

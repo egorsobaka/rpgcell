@@ -479,11 +479,17 @@ function App() {
   const [helpTooltip, setHelpTooltip] = useState<{ param: string; x: number; y: number } | null>(null);
   const [modalMessage, setModalMessage] = useState<{ title: string; message: string } | null>(null);
 
+  const VITE_API_URL = import.meta.env.VITE_API_URL;
+  const VITE_API_URL_SOCKET = import.meta.env.VITE_API_URL_SOCKET;
+
+
   useEffect(() => {
     // Проверяем сохраненный ID игрока
     const savedPlayerId = localStorage.getItem('playerId');
-    
-    const s = io('http://localhost:3000', {
+    console.log('VITE_API_URL', VITE_API_URL);
+    console.log('VITE_API_URL_SOCKET', VITE_API_URL_SOCKET);
+
+    const s = io(`${VITE_API_URL_SOCKET}`, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -1309,7 +1315,7 @@ function App() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         {entry.skin ? (
                           <img
-                            src={`http://localhost:3000${entry.skin}`}
+                            src={`${VITE_API_URL}/${entry.skin}`}
                             alt={entry.name}
                             style={{
                               width: '32px',
@@ -1543,7 +1549,7 @@ function App() {
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
                   {me.skin ? (
                     <img
-                      src={`http://localhost:3000${me.skin}`}
+                      src={`${VITE_API_URL}/${me.skin}`}
                       alt="Скин персонажа"
                       style={{
                         width: '64px',
@@ -1602,7 +1608,7 @@ function App() {
                           formData.append('file', file);
 
                           try {
-                            const response = await fetch(`http://localhost:3000/players/${me.id}/skin`, {
+                            const response = await fetch(`${VITE_API_URL}/players/${me.id}/skin`, {
                               method: 'POST',
                               body: formData,
                             });
@@ -1639,7 +1645,7 @@ function App() {
                         onClick={async () => {
                           if (!socket) return;
                           try {
-                            const response = await fetch(`http://localhost:3000/players/${me.id}/parameter/skin`, {
+                            const response = await fetch(`${VITE_API_URL}/players/${me.id}/parameter/skin`, {
                               method: 'PUT',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({ value: null }),
@@ -2492,7 +2498,7 @@ if (experience >= requiredExperience):
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
                           {character.skin ? (
                             <img
-                              src={`http://localhost:3000${character.skin}`}
+                              src={`${VITE_API_URL}/${character.skin}`}
                               alt={character.name}
                               style={{
                                 width: '48px',
