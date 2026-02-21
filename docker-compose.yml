@@ -94,8 +94,6 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       # - ./nginx/ssl:/etc/nginx/ssl:ro  # Для SSL сертификатов (опционально)
     depends_on:
-      - backend
-      - frontend
       - backend-dev
       - frontend-dev
     networks:
