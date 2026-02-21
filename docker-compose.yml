@@ -82,6 +82,24 @@ services:
     networks:
       - rpg-network
 
+nginx:
+    image: nginx:alpine
+    container_name: rpg-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"  # Публичный порт
+      # - "443:443"  # Для HTTPS (опционально)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # - ./nginx/ssl:/etc/nginx/ssl:ro  # Для SSL сертификатов (опционально)
+    depends_on:
+      - backend
+      - frontend
+      - backend-dev
+      - frontend-dev
+    networks:
+      - rpg-network
 volumes:
   mongodb_data:
 
